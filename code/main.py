@@ -25,10 +25,10 @@ def get_args_parser():
     parser.add_argument("--batch_size", type=int, default=512, help="Batch size for training.")
 
     # Training phase/epoch
-    parser.add_argument("--warmup_epoch", type=int, default=20, help="Number of epochs for warmup.")
-    parser.add_argument("--total_epochs", type=int, default=200, help="Total number of training epochs.")
-    parser.add_argument("--checkpoint_freq", type=int, default=20, help="Frequency of saving checkpoints.")
-    parser.add_argument("--phase_switch_freq", type=int, default=10, help="Frequency to switch phases.")
+    parser.add_argument("--warmup_epoch", type=int, default=30, help="Number of epochs for warmup.")
+    parser.add_argument("--total_epochs", type=int, default=1000, help="Total number of training epochs.")
+    parser.add_argument("--checkpoint_freq", type=int, default=10, help="Frequency of saving checkpoints.")
+    parser.add_argument("--phase_switch_freq", type=int, default=20, help="Frequency to switch phases.")
     
     # TO Hyperparameters
     parser.add_argument("--zeta", type=float, default=0.01, help="Regularization parameter for sparsity.")
@@ -167,7 +167,7 @@ def main(args):
                                               max_iterations = 5000) 
                 psi, c = transport_operator.M_step(pairs, psi, c, 
                                               stopping_criteria = 'absolute', 
-                                              initial_threshold = 1e-8,
+                                              initial_threshold = 1e-12,
                                               decay_rate = 0.95,
                                               max_iterations = 5000) 
                 

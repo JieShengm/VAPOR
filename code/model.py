@@ -62,7 +62,7 @@ class VAE(nn.Module):
         for b in range(batch_size):
             if dets[b] != 0:
                 trans_op_inv = torch.linalg.inv(trans_op[b])
-                z0_ast[b] = torch.einsum('ij,j->i', trans_op_inv, z1[b]) + 0.001 * torch.randn_like(z1[b], device=device)
+                z0_ast[b] = torch.einsum('ij,j->i', trans_op_inv, z1[b]) #+ 0.001 * torch.randn_like(z1[b], device=device)
             else:
                 print(f"Matrix at index {b} is not invertible.")
                 return None
