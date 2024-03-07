@@ -34,8 +34,8 @@ def get_args_parser():
     parser.add_argument("--zeta", type=float, default=0.01, help="Regularization parameter for sparsity.")
     parser.add_argument("--gamma", type=float, default=1e-3, help="Regularization parameter for dictionary.")
     parser.add_argument("--lr_eta_E", type=float, default=1e-5, help="Learning rate for TO E-step.")
-    parser.add_argument("--lr_eta_M", type=float, default=1e-5, help="Learning rate for TO M-step.")
-    parser.add_argument("--M", type=int, default=3, help="Some hyperparameter M.")
+    parser.add_argument("--lr_eta_M", type=float, default=1e-4, help="Learning rate for TO M-step.")
+    parser.add_argument("--M", type=int, default=4, help="Some hyperparameter M.")
     parser.add_argument("--max_iterations", type=int, default=5, help="Maximum number of iterations.")
 
     # Miscellaneous

@@ -54,7 +54,7 @@ class VAE(nn.Module):
         
     def transform_trans_op(self, pairs, psi, c):
         z0, z1 = pairs
-        device=z0.device()
+        device=z0.device
 
         trans_op = torch.matrix_exp(torch.sum(torch.einsum('bim,jkm->bjkm', c, psi), dim=-1))
         batch_size, latent_dim, _ = trans_op.shape
