@@ -166,7 +166,7 @@ def main(args):
                                               max_iterations = 5000,
                                               stopping_criteria = 'absolute', ) 
                 psi, c = transport_operator.M_step(pairs, psi, c, 
-                                              initial_threshold = 1e-8,
+                                              initial_threshold = 1e-6,
                                               decay_rate = 0.95,
                                               min_iterations = 10,
                                               max_iterations = 2000,
