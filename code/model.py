@@ -26,7 +26,7 @@ class VAE(nn.Module):
         for in_dim, out_dim in zip([latent_dim] + decoder_dims[:-1], decoder_dims):
             decoder_layers.extend([nn.Linear(in_dim, out_dim), nn.ReLU()])
         decoder_layers.append(nn.Linear(decoder_dims[-1], input_dim))
-        decoder_layers.append(nn.LeakyReLU())  # Adjust the final activation as needed
+        #decoder_layers.append(nn.LeakyReLU())  # Adjust the final activation as needed
         self.decoder = nn.Sequential(*decoder_layers)
 
     def reparameterize(self, mu, logvar):
