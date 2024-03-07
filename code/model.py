@@ -60,8 +60,8 @@ class TransportOperator(nn.Module):
 
     def construct_pairs(self, z0, n_neighbors=50):
         # Fit nearest neighbors
-        nbrs = NearestNeighbors(n_neighbors=n_neighbors+1, algorithm='ball_tree').fit(z0)#.cpu())
-        distances, indices = nbrs.kneighbors(z0)#.cpu())
+        nbrs = NearestNeighbors(n_neighbors=n_neighbors+1, algorithm='ball_tree').fit(z0.cpu())
+        distances, indices = nbrs.kneighbors(z0.cpu())
         distances = torch.tensor(distances).to(z0.device)
 
         # print(distances) # ensure the first column is zeros: YES

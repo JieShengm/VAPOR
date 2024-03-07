@@ -144,7 +144,9 @@ def main(args):
                 #print(pairs)
 
                 break
+            break
                 # Train the TO with z0, mu, logvar, or a
+                
 
 if __name__ == "__main__":
     args = get_args_parser()
