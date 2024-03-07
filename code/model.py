@@ -90,10 +90,10 @@ class TransportOperator(nn.Module):
 
     def E_step(self, 
                pairs, 
-               stopping_criteria='absolute', 
-               threshold=1e-8,
-               min_iterations = 200, 
-               max_iterations= 500):
+               threshold,
+               min_iterations, 
+               max_iterations,
+               stopping_criteria='absolute'):
         
         z0, z1 = pairs
         device = z0.device
@@ -135,11 +135,11 @@ class TransportOperator(nn.Module):
         return psi, c
     
     def M_step(self, pairs, psi, c,
-               stopping_criteria='absolute', 
-               initial_threshold = 1e-4,
-               decay_rate = 0.95,
-               min_iterations = 50,
-               max_iterations = 10000):
+               initial_threshold,
+               decay_rate,
+               min_iterations,
+               max_iterations,
+               stopping_criteria='absolute'):
          
         z0, z1 = pairs
 

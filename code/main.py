@@ -161,16 +161,16 @@ def main(args):
                     #print(z0) # check whether no_grad(): yes
                 pairs = construct_pairs(z0)
                 psi, c = transport_operator.E_step(pairs, 
-                                              stopping_criteria = 'absolute', 
                                               threshold = 1e-6, 
                                               min_iterations = 300,
-                                              max_iterations = 5000) 
+                                              max_iterations = 5000,
+                                              stopping_criteria = 'absolute', ) 
                 psi, c = transport_operator.M_step(pairs, psi, c, 
-                                              stopping_criteria = 'absolute', 
                                               initial_threshold = 1e-8,
                                               decay_rate = 0.95,
                                               min_iterations = 10,
-                                              max_iterations = 2000) 
+                                              max_iterations = 2000,
+                                              stopping_criteria = 'absolute', ) 
                 
                 psi_norm_squared = torch.norm(psi, p='fro', dim=[0, 1])**2
                 for i in range(psi_norm_squared.size(0)):  
