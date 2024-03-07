@@ -19,7 +19,7 @@ class Dataset(Dataset):
 def get_dataloader(data_path, batch_size, shuffle=True,  header=None, transform=None, return_input_dim = True):
     dataset = Dataset(data_path=data_path, header=header, transform=transform)
     input_dim = dataset.data.shape[1]
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, drop_last = True)
     if return_input_dim:
         return dataloader, input_dim
     else:
