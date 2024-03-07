@@ -48,10 +48,8 @@ class VAE(nn.Module):
         z0, mu, logvar = self.Encode(x)
         if z0_ast is not None:
             z = z0_ast
-            print(f'train on z0_ast: {z}')
         else:
             z = z0
-            # print(f'train on z0: grad_fn=<AddBackward0>')
         reconstructed = self.Decode(z)
         return reconstructed, z0, mu, logvar
         
@@ -126,12 +124,12 @@ class TransportOperator(nn.Module):
                     diff = abs(prev_loss - current_loss) / (abs(prev_loss) + 1e-8)
 
                 if diff < threshold:
-                    print(f"E-step: Convergence reached at iteration {i+1} with loss: {current_loss:.6f}")
-                    print(f'E-step: diff: {diff: .12f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
+                    # print(f"E-step: Convergence reached at iteration {i+1} with loss: {current_loss:.6f}")
+                    # print(f'E-step: diff: {diff: .12f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
                     break
-                elif (i+1) == max_iterations:
-                    print(f"E-step: Stop at iteration {i+1} with loss: {current_loss:.6f}")
-                    print(f'E-step: diff: {diff: .12f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
+                # elif (i+1) == max_iterations:
+                    # print(f"E-step: Stop at iteration {i+1} with loss: {current_loss:.6f}")
+                    # print(f'E-step: diff: {diff: .12f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
 
             prev_loss = current_loss
 
@@ -175,7 +173,7 @@ class TransportOperator(nn.Module):
                     break
                 elif (i+1) == max_iterations:
                     print(f"M-step: Stop at iteration {i+1} with loss: {current_loss:.6f}")
-                    print(f'E-step: diff: {diff: .12f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
+                    print(f'M-step: diff: {diff: .12f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
 
             prev_loss = current_loss
 
