@@ -36,7 +36,7 @@ def get_args_parser():
     parser.add_argument("--lr_eta_E", type=float, default=1e-5, help="Learning rate for TO E-step.")
     parser.add_argument("--lr_eta_M", type=float, default=1e-5, help="Learning rate for TO M-step.")
     parser.add_argument("--M", type=int, default=4, help="Some hyperparameter M.")
-    parser.add_argument("--max_iterations", type=int, default=5, help="Maximum number of iterations.")
+    #parser.add_argument("--max_iterations", type=int, default=5, help="Maximum number of iterations.")
 
     # Miscellaneous
     parser.add_argument("--WANDB_LOGGING", type=bool, default=True, help="Flag to enable or disable W&B logging.")
@@ -169,7 +169,7 @@ def main(args):
                                               initial_threshold = 1e-6,
                                               decay_rate = 0.99,
                                               min_iterations = 10,
-                                              max_iterations = 2000,
+                                              max_iterations = 200,
                                               stopping_criteria = 'absolute', ) 
                 
                 psi_norm_squared = torch.norm(psi, p='fro', dim=[0, 1])**2
