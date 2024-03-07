@@ -13,7 +13,7 @@ from utilities import get_dataloader, load_checkpoint
 def get_args_parser():
     parser = argparse.ArgumentParser(description="Train VAE.")
     
-    parser.add_argument("--data_path", type=str, default='./data/pasca/processed_for_training/train_pasca_subset_expr.csv', help="Data Path.")
+    parser.add_argument("--data_path", type=str, default='./data/Pasca/train_pasca_subset_expr.csv', help="Data Path.")
     parser.add_argument("--checkpoint_name", type=str, default=None, help="Path to a saved checkpoint to restart training.")
 
     # VAE Hyperparameters
@@ -133,6 +133,8 @@ def main(args):
                     z0 = vae.forward(data, return_latent = True)
                     #print(z0) # check whether no_grad(): yes
                 pairs = transport_operator.construct_pairs(z0)
+                print(pairs[0])
+                print(pairs[0].shape)
                 # TO_leanring(), optimizing steps
                 
                 # to get psi, and coef

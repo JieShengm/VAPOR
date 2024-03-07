@@ -54,13 +54,9 @@ class TransportOperator(nn.Module):
        super(TransportOperator, self).__init__() 
 
        #Initialization
-       #print('it should run only once')
-       #z0 = self.reparameterize(mu, logvar)
-       #self.pairs = self.construct_pairs_init(z0)
+       print('it should run only once')
        self.psi = torch.empty([latent_dim, latent_dim, M]).normal_(mean=0,std=0.1)
-       #print(self.pairs)
-       #print(self.psi)
-       print(self.psi.shape)
+       print(f"psi shape: {self.psi.shape} (run only once)")
 
     def construct_pairs(self, z0, n_neighbors=50):
         # Fit nearest neighbors
@@ -68,14 +64,15 @@ class TransportOperator(nn.Module):
         distances, indices = nbrs.kneighbors(z0)#.cpu())
         distances = torch.tensor(distances).to(z0.device)
 
-        print(distances) # ensure the first column is zeros
+        # print(distances) # ensure the first column is zeros: YES
         rho = torch.min(distances[:, 1:], dim=1).values
         sigma = torch.std(distances[:, 1:], dim=1)
         probabilities = torch.exp((distances[:, 1:] - rho.unsqueeze(1)) / sigma.unsqueeze(1))
         probabilities /= probabilities.sum(dim=1, keepdim=True)
         
         chosen_neighbors = torch.multinomial(probabilities, 1).squeeze()
-        pairs = [(z0[i], z0[indices[i, chosen_neighbors[i]+1]]) for i in range(len(z0))]
+        chosen_indices = indices[torch.arange(len(z0)), chosen_neighbors + 1]
+        pairs = [z0, z0[chosen_indices]]
         return pairs
 
     def filter_psi(self, c_min, epsilon=1e-6):
