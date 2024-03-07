@@ -33,8 +33,8 @@ def get_args_parser():
     # TO Hyperparameters
     parser.add_argument("--zeta", type=float, default=0.01, help="Regularization parameter for sparsity.")
     parser.add_argument("--gamma", type=float, default=1e-3, help="Regularization parameter for dictionary.")
-    parser.add_argument("--lr_eta_E", type=float, default=1e-3, help="Learning rate for TO E-step.")
-    parser.add_argument("--lr_eta_M", type=float, default=1e-4, help="Learning rate for TO M-step.")
+    parser.add_argument("--lr_eta_E", type=float, default=1e-5, help="Learning rate for TO E-step.")
+    parser.add_argument("--lr_eta_M", type=float, default=1e-5, help="Learning rate for TO M-step.")
     parser.add_argument("--M", type=int, default=3, help="Some hyperparameter M.")
     parser.add_argument("--max_iterations", type=int, default=5, help="Maximum number of iterations.")
 
@@ -164,12 +164,12 @@ def main(args):
                                               stopping_criteria = 'absolute', 
                                               threshold = 1e-6, 
                                               min_iterations = 300,
-                                              max_iterations = 1000) 
+                                              max_iterations = 5000) 
                 psi, c = transport_operator.M_step(pairs, psi, c, 
                                               stopping_criteria = 'absolute', 
                                               initial_threshold = 1e-8,
                                               decay_rate = 0.95,
-                                              max_iterations = 2000) 
+                                              max_iterations = 5000) 
                 
                 psi_norm_squared = torch.norm(psi, p='fro', dim=[0, 1])**2
                 for i in range(psi_norm_squared.size(0)):  

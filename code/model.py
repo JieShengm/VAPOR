@@ -54,6 +54,8 @@ class VAE(nn.Module):
         
     def transform_trans_op(self, pairs, psi, c):
         z0, z1 = pairs
+        device=z0.device()
+
         trans_op = torch.matrix_exp(torch.sum(torch.einsum('bim,jkm->bjkm', c, psi), dim=-1))
         batch_size, latent_dim, _ = trans_op.shape
         z0_ast = torch.zeros_like(z1)
@@ -62,7 +64,7 @@ class VAE(nn.Module):
         for b in range(batch_size):
             if dets[b] != 0:
                 trans_op_inv = torch.linalg.inv(trans_op[b])
-                z0_ast[b] = torch.einsum('ij,j->i', trans_op_inv, z1[b]) + 0.01 * torch.randn_like(z1)
+                z0_ast[b] = torch.einsum('ij,j->i', trans_op_inv, z1[b]) + 0.01 * torch.randn_like(z1, device=device)
             else:
                 print(f"Matrix at index {b} is not invertible.")
                 return None
