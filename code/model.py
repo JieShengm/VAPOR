@@ -70,7 +70,6 @@ class VAE(nn.Module):
 
 class TransportOperator(nn.Module):
     def __init__(self, 
-                 #z0,
                  latent_dim,
                  M,
                  gamma,
@@ -79,8 +78,8 @@ class TransportOperator(nn.Module):
                  lr_eta_M):
        
        super(TransportOperator, self).__init__() 
-
-       self.psi = torch.empty([latent_dim, latent_dim, M]).normal_(mean=0,std=0.1)
+       device = torch.device("cuda" if torch.cuda.is_available() else "cpu") ## change this later
+       self.psi = torch.empty([latent_dim, latent_dim, M]).normal_(mean=0,std=0.1).to(device)
        self.c = None
        self.gamma = gamma
        self.zeta = zeta
