@@ -47,8 +47,6 @@ class VAE(nn.Module):
     def forward(self, x, z0_ast=None):
         z0, mu, logvar = self.Encode(x)
         z = z0_ast if z0_ast is not None else z0
-        if z0_ast is not None:
-            print('we train on z0_ast')
         reconstructed = self.Decode(z)
         return reconstructed, z0, mu, logvar
         
@@ -121,11 +119,11 @@ class TransportOperator(nn.Module):
                 diff = abs(prev_loss - current_loss) / (abs(prev_loss) + 1e-8)
 
             if diff < threshold:
-                print(f"E-step: Convergence reached at iteration {i+1} with loss: {current_loss:.6f}")
-                print(f'E-step: diff: {diff: .12f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
+                # print(f"E-step: Convergence reached at iteration {i+1} with loss: {current_loss:.6f}")
+                # print(f'E-step: diff: {diff: .12f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
                 break
-            elif (i+1) == max_iterations:
-                print(f"E-step: Stop at iteration {i+1} with loss: {current_loss:.6f}")
+            # elif (i+1) == max_iterations:
+            #     print(f"E-step: Stop at iteration {i+1} with loss: {current_loss:.6f}")
 
             prev_loss = current_loss
 
