@@ -189,7 +189,7 @@ class TransportOperator(nn.Module):
         else: 
             return energy
 
-    def filter_psi(self, psi, c, epsilon=1e-6):
+    def filter_psi(self, psi, c, epsilon=1e-8):
         norms = torch.norm(psi, p='fro',dim=[0,1])**2
         sorted_indices = torch.argsort(norms,descending=True)
         filtered_indices = sorted_indices[norms[sorted_indices] > epsilon]
