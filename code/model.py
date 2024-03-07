@@ -106,24 +106,25 @@ class TransportOperator(nn.Module):
         optimizer_c = optim.AdamW([c], self.lr_eta_E)
         prev_loss = float('inf')
 
-        for i in range(min_iterations, max_iterations):
+        for i in range(max_iterations):
             optimizer_c.zero_grad()
             loss = self.energy_function(pairs, psi, c)
             loss.backward()
             optimizer_c.step()
 
             current_loss = loss.item()
-            if stopping_criteria == 'absolute':
-                diff = abs(prev_loss - current_loss)
-            elif stopping_criteria == 'relative':
-                diff = abs(prev_loss - current_loss) / (abs(prev_loss) + 1e-8)
+            if i > min_iterations:
+                if stopping_criteria == 'absolute':
+                    diff = abs(prev_loss - current_loss)
+                elif stopping_criteria == 'relative':
+                    diff = abs(prev_loss - current_loss) / (abs(prev_loss) + 1e-8)
 
-            if diff < threshold:
-                # print(f"E-step: Convergence reached at iteration {i+1} with loss: {current_loss:.6f}")
-                # print(f'E-step: diff: {diff: .12f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
-                break
-            # elif (i+1) == max_iterations:
-            #     print(f"E-step: Stop at iteration {i+1} with loss: {current_loss:.6f}")
+                if diff < threshold:
+                    # print(f"E-step: Convergence reached at iteration {i+1} with loss: {current_loss:.6f}")
+                    # print(f'E-step: diff: {diff: .12f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
+                    break
+                # elif (i+1) == max_iterations:
+                #     print(f"E-step: Stop at iteration {i+1} with loss: {current_loss:.6f}")
 
             prev_loss = current_loss
 
@@ -137,6 +138,7 @@ class TransportOperator(nn.Module):
                stopping_criteria='absolute', 
                initial_threshold = 1e-4,
                decay_rate = 0.95,
+               min_iterations = 50,
                max_iterations = 10000):
          
         z0, z1 = pairs
@@ -155,17 +157,18 @@ class TransportOperator(nn.Module):
             
             current_loss = loss.item()
             
-            if stopping_criteria == 'absolute':
-                diff = abs(prev_loss - current_loss)
-            elif stopping_criteria == 'relative':
-                diff = abs(prev_loss - current_loss) / (abs(prev_loss) + 1e-8)
+            if i > min_iterations:
+                if stopping_criteria == 'absolute':
+                    diff = abs(prev_loss - current_loss)
+                elif stopping_criteria == 'relative':
+                    diff = abs(prev_loss - current_loss) / (abs(prev_loss) + 1e-8)
 
-            if diff < threshold:
-                print(f"M-step: Convergence reached at iteration {i+1} with loss: {current_loss:.6f}")
-                print(f'M-step: diff: {diff: .12f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
-                break
-            elif (i+1) == max_iterations:
-                print(f"M-step: Stop at iteration {i+1} with loss: {current_loss:.6f}")
+                if diff < threshold:
+                    print(f"M-step: Convergence reached at iteration {i+1} with loss: {current_loss:.6f}")
+                    print(f'M-step: diff: {diff: .12f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
+                    break
+                elif (i+1) == max_iterations:
+                    print(f"M-step: Stop at iteration {i+1} with loss: {current_loss:.6f}")
 
             prev_loss = current_loss
 

@@ -25,7 +25,7 @@ def get_args_parser():
     parser.add_argument("--batch_size", type=int, default=512, help="Batch size for training.")
 
     # Training phase/epoch
-    parser.add_argument("--warmup_epoch", type=int, default=30, help="Number of epochs for warmup.")
+    parser.add_argument("--warmup_epoch", type=int, default=20, help="Number of epochs for warmup.")
     parser.add_argument("--total_epochs", type=int, default=1000, help="Total number of training epochs.")
     parser.add_argument("--checkpoint_freq", type=int, default=10, help="Frequency of saving checkpoints.")
     parser.add_argument("--phase_switch_freq", type=int, default=20, help="Frequency to switch phases.")
@@ -169,6 +169,7 @@ def main(args):
                                               stopping_criteria = 'absolute', 
                                               initial_threshold = 1e-12,
                                               decay_rate = 0.95,
+                                              min_iterations = 50,
                                               max_iterations = 5000) 
                 
                 psi_norm_squared = torch.norm(psi, p='fro', dim=[0, 1])**2
