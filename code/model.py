@@ -62,6 +62,7 @@ class TransportOperator(nn.Module):
         # Fit nearest neighbors
         nbrs = NearestNeighbors(n_neighbors=n_neighbors+1, algorithm='ball_tree').fit(z0.cpu())
         distances, indices = nbrs.kneighbors(z0.cpu())
+        indices = torch.tensor(indices).to(z0.device) 
         distances = torch.tensor(distances).to(z0.device)
 
         # print(distances) # ensure the first column is zeros: YES
