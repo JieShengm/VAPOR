@@ -100,8 +100,7 @@ class TransportOperator(nn.Module):
         batch_size = z0.shape[0]
         m = self.psi.shape[2]
         
-        self.c = torch.zeros([batch_size, 1, m], device=device)
-        c = self.c.clone().requires_grad_(True)
+        c = torch.zeros([batch_size, 1, m], device=device).requires_grad_(True)
         psi = self.psi
 
         optimizer_c = optim.AdamW([c], self.lr_eta_E)
@@ -128,10 +127,13 @@ class TransportOperator(nn.Module):
 
             prev_loss = current_loss
 
-        self.c = c.detach()
-        return self.psi, self.c
+        c = c.detach()
+        self.c = c
+        self.psi = psi
+
+        return psi, c
     
-    def M_step(self, pairs, 
+    def M_step(self, pairs, psi, c,
                stopping_criteria='absolute', 
                initial_threshold = 1e-4,
                decay_rate = 0.95,
@@ -139,8 +141,7 @@ class TransportOperator(nn.Module):
          
         z0, z1 = pairs
 
-        psi = self.psi.clone().requires_grad_(True)
-        c = self.c
+        psi = psi.requires_grad_(True)
 
         optimizer_psi = optim.AdamW([psi], self.lr_eta_M)
         prev_loss = float('inf')
@@ -170,6 +171,7 @@ class TransportOperator(nn.Module):
 
         threshold *= decay_rate
 
+        self.psi, self.c = self.filter_psi(psi.detach(),c)
         return self.psi, self.c
 
     def energy_function(self, pairs, psi, c, return_all = False):
