@@ -46,7 +46,12 @@ class VAE(nn.Module):
 
     def forward(self, x, z0_ast=None):
         z0, mu, logvar = self.Encode(x)
-        z = z0_ast if z0_ast is not None else z0
+        if z0_ast is not None:
+            z = z0_ast
+            print(f'train on z0_ast: {z}')
+        else:
+            z = z0
+            # print(f'train on z0: grad_fn=<AddBackward0>')
         reconstructed = self.Decode(z)
         return reconstructed, z0, mu, logvar
         
@@ -95,20 +100,21 @@ class TransportOperator(nn.Module):
                max_iterations,
                stopping_criteria='absolute'):
         
-        z0, z1 = pairs
-        device = z0.device
-        batch_size = z0.shape[0]
+        pairs = (pairs[0].detach(), pairs[1].detach())
+
+        device = pairs[0].device
+        batch_size = pairs[0].shape[0]
         m = self.psi.shape[2]
         
         c = torch.zeros([batch_size, 1, m], device=device).requires_grad_(True)
         psi = self.psi
-
         optimizer_c = optim.AdamW([c], self.lr_eta_E)
         prev_loss = float('inf')
 
         for i in range(max_iterations):
             optimizer_c.zero_grad()
             loss = self.energy_function(pairs, psi, c)
+            #print(f'c: {c}; \nloss: {c}')
             loss.backward()
             optimizer_c.step()
 
@@ -120,11 +126,12 @@ class TransportOperator(nn.Module):
                     diff = abs(prev_loss - current_loss) / (abs(prev_loss) + 1e-8)
 
                 if diff < threshold:
-                    # print(f"E-step: Convergence reached at iteration {i+1} with loss: {current_loss:.6f}")
-                    # print(f'E-step: diff: {diff: .12f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
+                    print(f"E-step: Convergence reached at iteration {i+1} with loss: {current_loss:.6f}")
+                    print(f'E-step: diff: {diff: .12f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
                     break
-                # elif (i+1) == max_iterations:
-                #     print(f"E-step: Stop at iteration {i+1} with loss: {current_loss:.6f}")
+                elif (i+1) == max_iterations:
+                    print(f"E-step: Stop at iteration {i+1} with loss: {current_loss:.6f}")
+                    print(f'E-step: diff: {diff: .12f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
 
             prev_loss = current_loss
 
@@ -141,10 +148,9 @@ class TransportOperator(nn.Module):
                max_iterations,
                stopping_criteria='absolute'):
          
-        z0, z1 = pairs
+        pairs = (pairs[0].detach(), pairs[1].detach())
 
         psi = psi.requires_grad_(True)
-
         optimizer_psi = optim.AdamW([psi], self.lr_eta_M)
         prev_loss = float('inf')
         threshold = initial_threshold * (decay_rate ** self.trans_op_training_counter)
@@ -169,6 +175,7 @@ class TransportOperator(nn.Module):
                     break
                 elif (i+1) == max_iterations:
                     print(f"M-step: Stop at iteration {i+1} with loss: {current_loss:.6f}")
+                    print(f'E-step: diff: {diff: .12f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
 
             prev_loss = current_loss
 
@@ -211,8 +218,8 @@ class TransportOperator(nn.Module):
         self.trans_op_training_counter += 1
 
 def construct_pairs(z0, n_neighbors=50):
-    nbrs = NearestNeighbors(n_neighbors=n_neighbors+1, algorithm='ball_tree').fit(z0.cpu())
-    distances, indices = nbrs.kneighbors(z0.cpu())
+    nbrs = NearestNeighbors(n_neighbors=n_neighbors+1, algorithm='ball_tree').fit(z0.detach().cpu())
+    distances, indices = nbrs.kneighbors(z0.detach().cpu())
     indices = torch.tensor(indices).to(z0.device) 
     distances = torch.tensor(distances).to(z0.device)
 

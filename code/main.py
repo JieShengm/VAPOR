@@ -33,8 +33,8 @@ def get_args_parser():
     # TO Hyperparameters
     parser.add_argument("--zeta", type=float, default=0.01, help="Regularization parameter for sparsity.")
     parser.add_argument("--gamma", type=float, default=1e-4, help="Regularization parameter for dictionary.")
-    parser.add_argument("--lr_eta_E", type=float, default=1e-5, help="Learning rate for TO E-step.")
-    parser.add_argument("--lr_eta_M", type=float, default=1e-5, help="Learning rate for TO M-step.")
+    parser.add_argument("--lr_eta_E", type=float, default=1e-6, help="Learning rate for TO E-step.")
+    parser.add_argument("--lr_eta_M", type=float, default=1e-6, help="Learning rate for TO M-step.")
     parser.add_argument("--M", type=int, default=4, help="Some hyperparameter M.")
     #parser.add_argument("--max_iterations", type=int, default=5, help="Maximum number of iterations.")
 
@@ -108,17 +108,16 @@ def main(args):
                     BCE, KLD = vae_to_loss(data, recon, mu, logvar)
                     loss = BCE + KLD
                 else:
-                    with torch.no_grad():
-                        z0, _, _ = vae.Encode(data)
+                    z0, _, _ = vae.Encode(data)
                     pairs = construct_pairs(z0)
                     psi, c = transport_operator.E_step(pairs, 
-                                              stopping_criteria = 'absolute', 
-                                              threshold = 1e-6, 
-                                              min_iterations = 300,
-                                              max_iterations = 1000) 
+                                                        threshold = 1e-9, 
+                                                        min_iterations = 300,
+                                                        max_iterations = 2000,
+                                                        stopping_criteria = 'absolute') 
                     z0_ast = vae.transform_trans_op(pairs, psi, c)
                     recon, _, mu, logvar = vae(data, z0_ast = z0_ast)
-                    BCE, KLD, MSE = vae_to_loss(data, recon, mu, logvar, z0, z0_ast)
+                    BCE, KLD, MSE = vae_to_loss(data, recon, mu, logvar, z0_ast, z0)
                     loss = BCE + KLD
                 loss.backward()
             
@@ -163,14 +162,14 @@ def main(args):
                 psi, c = transport_operator.E_step(pairs, 
                                               threshold = 1e-6, 
                                               min_iterations = 300,
-                                              max_iterations = 5000,
-                                              stopping_criteria = 'absolute', ) 
+                                              max_iterations = 2000,
+                                              stopping_criteria = 'absolute') 
                 psi, c = transport_operator.M_step(pairs, psi, c, 
                                               initial_threshold = 1e-6,
                                               decay_rate = 0.99,
                                               min_iterations = 10,
                                               max_iterations = 200,
-                                              stopping_criteria = 'absolute', ) 
+                                              stopping_criteria = 'absolute') 
                 
                 psi_norm_squared = torch.norm(psi, p='fro', dim=[0, 1])**2
                 for i in range(psi_norm_squared.size(0)):  
