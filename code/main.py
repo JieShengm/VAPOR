@@ -25,7 +25,7 @@ def get_args_parser():
     parser.add_argument("--batch_size", type=int, default=512, help="Batch size for training.")
 
     # Training phase/epoch
-    parser.add_argument("--warmup_epoch", type=int, default=50, help="Number of epochs for warmup.")
+    parser.add_argument("--warmup_epoch", type=int, default=200, help="Number of epochs for warmup.")
     parser.add_argument("--total_epochs", type=int, default=1000, help="Total number of training epochs.")
     parser.add_argument("--checkpoint_freq", type=int, default=50, help="Frequency of saving checkpoints.")
     parser.add_argument("--phase_switch_freq", type=int, default=50, help="Frequency to switch phases.")
