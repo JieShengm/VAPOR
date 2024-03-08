@@ -113,7 +113,7 @@ def main(args):
                           'model_state_dict': vae.state_dict(),
                           'optimizer_state_dict': optimizer_vae.state_dict(),
                           'psi':transport_operator.psi}
-            checkpoint_path = os.path.join(args.output_dir, f"vae_warmup_epoch{epoch}_init.pth")
+            checkpoint_path = os.path.join(args.output_dir, f"vae_warmup_init.pth")
             torch.save(checkpoint, checkpoint_path)
 
         # TO PART
