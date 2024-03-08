@@ -163,7 +163,7 @@ class TransportOperator(nn.Module):
         psi = psi.requires_grad_(True)
         optimizer_psi = optim.AdamW([psi], self.lr_eta_M)
         prev_loss = float('inf')
-        threshold = initial_threshold * (decay_rate ** self.trans_op_training_counter)
+        # threshold = initial_threshold * (decay_rate ** self.trans_op_training_counter)
         
         start_time = time.time()
         for i in range(max_iterations):
@@ -190,7 +190,7 @@ class TransportOperator(nn.Module):
 
             prev_loss = current_loss
 
-        threshold *= decay_rate
+        # threshold *= decay_rate
 
         diff = abs(prev_loss - current_loss)
         print(f"M-step: Stop at iteration {i+1} with loss: {current_loss:.6f}")
