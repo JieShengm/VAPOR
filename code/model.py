@@ -56,11 +56,10 @@ class VAE(nn.Module):
         return reconstructed, z0, mu, logvar
         
     def transform_trans_op(self, pairs, psi, c):
-        z0, z1 = pairs
-        device=z0.device
+        _, z1 = pairs
 
         trans_op = torch.matrix_exp(torch.sum(torch.einsum('bim,jkm->bjkm', c, psi), dim=-1))
-        batch_size, latent_dim, _ = trans_op.shape
+        batch_size, _, _ = trans_op.shape
         z0_ast = torch.zeros_like(z1)
 
         dets = torch.linalg.det(trans_op)
@@ -83,6 +82,7 @@ class TransportOperator(nn.Module):
                  lr_eta_M):
        
        super(TransportOperator, self).__init__() 
+
        device = torch.device("cuda" if torch.cuda.is_available() else "cpu") ## change this later
        self.psi = torch.empty([latent_dim, latent_dim, M]).normal_(mean=0,std=0.1).to(device)
        self.c = None
@@ -91,14 +91,9 @@ class TransportOperator(nn.Module):
        self.lr_eta_E = lr_eta_E
        self.lr_eta_M = lr_eta_M 
 
-       self.trans_op_training_counter = 0
-
     def E_step(self, 
                pairs, 
-               threshold = None,
-               min_iterations = None, 
-               max_iterations = None,
-               stopping_criteria='absolute'):
+               max_iterations = None,):
         
         pairs = (pairs[0].detach(), pairs[1].detach())
 
@@ -109,39 +104,14 @@ class TransportOperator(nn.Module):
         c = torch.zeros([batch_size, 1, m], device=device).requires_grad_(True)
         psi = self.psi
         optimizer_c = optim.AdamW([c], self.lr_eta_E)
-        prev_loss = float('inf')
 
         start_time = time.time()
         for i in range(max_iterations):
             optimizer_c.zero_grad()
             loss = self.energy_function(pairs, psi, c)
-            #print(f'c: {c}; \nloss: {c}')
             loss.backward()
             optimizer_c.step()
-
-            current_loss = loss.item()
-
-            # if i > min_iterations:
-            #     if stopping_criteria == 'absolute':
-            #         diff = abs(prev_loss - current_loss)
-            #     elif stopping_criteria == 'relative':
-            #         diff = abs(prev_loss - current_loss) / (abs(prev_loss) + 1e-8)
-
-            #     if diff < threshold:
-            #         print(f"E-step: Convergence reached at iteration {i+1} with loss: {current_loss:.6f}")
-            #         print(f'E-step: diff: {diff: .16f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
-            #         break
-            #     elif (i+1) == max_iterations:
-            #         print(f"E-step: Stop at iteration {i+1} with loss: {current_loss:.6f}")
-            #         print(f'E-step: diff: {diff: .16f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
-
-            prev_loss = current_loss
-
-        diff = abs(prev_loss - current_loss)
-        print(f"E-step: Stop at iteration {i+1} with loss: {current_loss:.6f}")
-        print(f'E-step: diff: {diff: .16f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
-
-        end_time = time.time()  # End timing
+        end_time = time.time()
         elapsed_time = end_time - start_time
         print(f"E_step completed in {elapsed_time:.2f} seconds.")
 
@@ -151,19 +121,11 @@ class TransportOperator(nn.Module):
 
         return psi, c
     
-    def M_step(self, pairs, psi, c,
-               initial_threshold = None,
-               decay_rate = None,
-               min_iterations = None,
-               max_iterations = None,
-               stopping_criteria='absolute'):
-         
+    def M_step(self, pairs, psi, c,max_iterations = None,): 
         pairs = (pairs[0].detach(), pairs[1].detach())
 
         psi = psi.requires_grad_(True)
         optimizer_psi = optim.AdamW([psi], self.lr_eta_M)
-        prev_loss = float('inf')
-        # threshold = initial_threshold * (decay_rate ** self.trans_op_training_counter)
         
         start_time = time.time()
         for i in range(max_iterations):
@@ -171,32 +133,7 @@ class TransportOperator(nn.Module):
             loss = self.energy_function(pairs, psi, c)
             loss.backward()
             optimizer_psi.step()
-            
-            current_loss = loss.item()
-            
-            # if i > min_iterations:
-            #     if stopping_criteria == 'absolute':
-            #         diff = abs(prev_loss - current_loss)
-            #     elif stopping_criteria == 'relative':
-            #         diff = abs(prev_loss - current_loss) / (abs(prev_loss) + 1e-8)
-
-            #     if diff < threshold:
-            #         print(f"M-step: Convergence reached at iteration {i+1} with loss: {current_loss:.6f}")
-            #         print(f'M-step: diff: {diff: .16f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
-            #         break
-            #     elif (i+1) == max_iterations:
-            #         print(f"M-step: Stop at iteration {i+1} with loss: {current_loss:.6f}")
-            #         print(f'M-step: diff: {diff: .16f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
-
-            prev_loss = current_loss
-
-        # threshold *= decay_rate
-
-        diff = abs(prev_loss - current_loss)
-        print(f"M-step: Stop at iteration {i+1} with loss: {current_loss:.6f}")
-        print(f'M-step: diff: {diff: .16f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
-
-        end_time = time.time()  # End timing
+        end_time = time.time()
         elapsed_time = end_time - start_time
         print(f"M_step completed in {elapsed_time:.2f} seconds.")
 
@@ -232,9 +169,6 @@ class TransportOperator(nn.Module):
             c = c[:,:,filtered_indices]
             print("Filtered M, M = ",m_filtered)
         return psi, c
-    
-    def update_to_training_counter(self):
-        self.trans_op_training_counter += 1
 
 def construct_pairs(z0, n_neighbors=10):
     nbrs = NearestNeighbors(n_neighbors=n_neighbors+1, algorithm='ball_tree').fit(z0.detach().cpu())
