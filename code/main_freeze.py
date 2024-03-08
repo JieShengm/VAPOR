@@ -88,9 +88,8 @@ def main(args):
     vae.train()
     for epoch in range(start_epoch, args.total_epochs):
 
-        train_vaeto = epoch >= warmup_epoch
-
         # VAE PART    
+        train_vaeto = epoch >= warmup_epoch
         train_loss, total_bce, total_kld, total_to_transformed_mse = train_vae(train_loader, 
                                                                                vae, 
                                                                                transport_operator, 
@@ -110,7 +109,8 @@ def main(args):
             print(f'Epoch {epoch} (vae+to), Loss: {train_loss / len(train_loader.dataset): .6f}')
 
         # TO PART
-        if ((epoch+1) == warmup_epoch) or ((epoch-warmup_epoch+1) % args.to_learning_freq == 0):
+        train_to = ((epoch+1) == warmup_epoch) or ((epoch+1) > warmup_epoch and (epoch+1 - warmup_epoch) % args.to_learning_freq == 0)
+        if train_to:
             # Train transport operator
             total_energy, total_recon_loss, total_trans_op_loss, total_coef_loss = train_transport_operator(train_loader, 
                                                                                                             vae, 
@@ -133,7 +133,7 @@ def main(args):
                           'psi':transport_operator.psi}
             checkpoint_path = os.path.join(args.output_dir, f"vae_warmup_epoch{epoch}.pth")
             torch.save(checkpoint, checkpoint_path)
-        elif train_vaeto and (epoch+1-warmup_epoch) % args.checkpoint_freq == 0:
+        elif train_vaeto and ((epoch+1-warmup_epoch) % args.checkpoint_freq == 0):
             checkpoint = {'epoch': epoch,
                           'model_state_dict': vae.state_dict(),
                           'optimizer_state_dict': optimizer_vae.state_dict(),
