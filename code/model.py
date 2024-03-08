@@ -215,7 +215,7 @@ class TransportOperator(nn.Module):
     def update_to_training_counter(self):
         self.trans_op_training_counter += 1
 
-def construct_pairs(z0, n_neighbors=50):
+def construct_pairs(z0, n_neighbors=10):
     nbrs = NearestNeighbors(n_neighbors=n_neighbors+1, algorithm='ball_tree').fit(z0.detach().cpu())
     distances, indices = nbrs.kneighbors(z0.detach().cpu())
     indices = torch.tensor(indices).to(z0.device) 

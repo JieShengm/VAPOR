@@ -21,7 +21,7 @@ def get_args_parser():
     parser.add_argument("--encoder_dims", type=lambda s: [int(item) for item in s.split(',')], default="1024, 512, 256, 128", help="Comma-separated list of encoder dimensions.")
     parser.add_argument("--decoder_dims", type=lambda s: [int(item) for item in s.split(',')], default="128, 256, 512, 1024", help="Comma-separated list of decoder dimensions.")
 
-    parser.add_argument("--lr_vae", type=float, default=0.001, help="Learning rate for vae.")
+    parser.add_argument("--lr_vae", type=float, default=1e-5, help="Learning rate for vae.")
     parser.add_argument("--batch_size", type=int, default=512, help="Batch size for training.")
 
     # Training phase/epoch
@@ -32,8 +32,8 @@ def get_args_parser():
     
     # TO Hyperparameters
     parser.add_argument("--zeta", type=float, default=0.01, help="Regularization parameter for sparsity.")
-    parser.add_argument("--gamma", type=float, default=1e-4, help="Regularization parameter for dictionary.")
-    parser.add_argument("--lr_eta_E", type=float, default=1e-6, help="Learning rate for TO E-step.")
+    parser.add_argument("--gamma", type=float, default=1e-3, help="Regularization parameter for dictionary.")
+    parser.add_argument("--lr_eta_E", type=float, default=1e-5, help="Learning rate for TO E-step.")
     parser.add_argument("--lr_eta_M", type=float, default=1e-6, help="Learning rate for TO M-step.")
     parser.add_argument("--M", type=int, default=4, help="Some hyperparameter M.")
     #parser.add_argument("--max_iterations", type=int, default=5, help="Maximum number of iterations.")
@@ -41,7 +41,7 @@ def get_args_parser():
     # Miscellaneous
     parser.add_argument("--WANDB_LOGGING", type=bool, default=True, help="Flag to enable or disable W&B logging.")
     parser.add_argument("--wandb_project_name", type=str, default="VAETO", help="W&B project name.")
-    parser.add_argument("--output_dir", type=str, default='./out_test', help="Path to save .pth files.")
+    parser.add_argument("--output_dir", type=str, default='./out/test', help="Path to save .pth files.")
 
     return parser
 
@@ -165,10 +165,10 @@ def main(args):
                                               max_iterations = 2000,
                                               stopping_criteria = 'absolute') 
                 psi, c = transport_operator.M_step(pairs, psi, c, 
-                                              initial_threshold = 1e-6,
-                                              decay_rate = 0.99,
-                                              min_iterations = 10,
-                                              max_iterations = 200,
+                                              initial_threshold = 1e-8,
+                                              decay_rate = 0.95,
+                                              min_iterations = 50,
+                                              max_iterations = 1000,
                                               stopping_criteria = 'absolute') 
                 
                 psi_norm_squared = torch.norm(psi, p='fro', dim=[0, 1])**2
