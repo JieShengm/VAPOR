@@ -92,7 +92,7 @@ class TransportOperator(nn.Module):
     def E_step(self, 
                pairs, 
                max_iterations = None,):
-        
+        max_iterations = max(10000, max_iterations)
         pairs = (pairs[0].detach(), pairs[1].detach())
 
         device = pairs[0].device
