@@ -25,10 +25,10 @@ def get_args_parser():
     parser.add_argument("--batch_size", type=int, default=512, help="Batch size for training.")
 
     # Training phase/epoch
-    parser.add_argument("--warmup_epoch", type=int, default=20, help="Number of epochs for warmup.")
+    parser.add_argument("--warmup_epoch", type=int, default=50, help="Number of epochs for warmup.")
     parser.add_argument("--total_epochs", type=int, default=1000, help="Total number of training epochs.")
-    parser.add_argument("--checkpoint_freq", type=int, default=10, help="Frequency of saving checkpoints.")
-    parser.add_argument("--phase_switch_freq", type=int, default=20, help="Frequency to switch phases.")
+    parser.add_argument("--checkpoint_freq", type=int, default=50, help="Frequency of saving checkpoints.")
+    parser.add_argument("--phase_switch_freq", type=int, default=50, help="Frequency to switch phases.")
     
     # TO Hyperparameters
     parser.add_argument("--zeta", type=float, default=0.01, help="Regularization parameter for sparsity.")
@@ -111,10 +111,10 @@ def main(args):
                     z0, _, _ = vae.Encode(data)
                     pairs = construct_pairs(z0)
                     psi, c = transport_operator.E_step(pairs, 
-                                                        threshold = 1e-9, 
-                                                        min_iterations = 300,
-                                                        max_iterations = 2000,
-                                                        stopping_criteria = 'absolute') 
+                                                       threshold = 1e-8, 
+                                                       min_iterations = 300,
+                                                       max_iterations = 2000,
+                                                       stopping_criteria = 'absolute') 
                     z0_ast = vae.transform_trans_op(pairs, psi, c)
                     recon, _, mu, logvar = vae(data, z0_ast = z0_ast)
                     BCE, KLD, MSE = vae_to_loss(data, recon, mu, logvar, z0_ast, z0)
@@ -160,10 +160,10 @@ def main(args):
                     #print(z0) # check whether no_grad(): yes
                 pairs = construct_pairs(z0)
                 psi, c = transport_operator.E_step(pairs, 
-                                              threshold = 1e-6, 
-                                              min_iterations = 300,
-                                              max_iterations = 2000,
-                                              stopping_criteria = 'absolute') 
+                                                   threshold = 1e-8, 
+                                                   min_iterations = 300,
+                                                   max_iterations = 2000,
+                                                   stopping_criteria = 'relative') 
                 psi, c = transport_operator.M_step(pairs, psi, c, 
                                               initial_threshold = 1e-8,
                                               decay_rate = 0.95,
