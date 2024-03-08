@@ -168,7 +168,7 @@ def main(args):
                                             #   initial_threshold = 1e-8,
                                             #   decay_rate = 0.95,
                                             #   min_iterations = 50,
-                                              max_iterations = 10000,
+                                              max_iterations = 50000,
                                               stopping_criteria = 'absolute') 
                 
                 psi_norm_squared = torch.norm(psi, p='fro', dim=[0, 1])**2
