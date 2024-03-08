@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
+import time
+
 from sklearn.neighbors import NearestNeighbors
 
 class VAE(nn.Module):
@@ -109,6 +111,7 @@ class TransportOperator(nn.Module):
         optimizer_c = optim.AdamW([c], self.lr_eta_E)
         prev_loss = float('inf')
 
+        start_time = time.time()
         for i in range(max_iterations):
             optimizer_c.zero_grad()
             loss = self.energy_function(pairs, psi, c)
@@ -117,21 +120,30 @@ class TransportOperator(nn.Module):
             optimizer_c.step()
 
             current_loss = loss.item()
-            if i > min_iterations:
-                if stopping_criteria == 'absolute':
-                    diff = abs(prev_loss - current_loss)
-                elif stopping_criteria == 'relative':
-                    diff = abs(prev_loss - current_loss) / (abs(prev_loss) + 1e-8)
 
-                if diff < threshold:
-                    print(f"E-step: Convergence reached at iteration {i+1} with loss: {current_loss:.6f}")
-                    print(f'E-step: diff: {diff: .16f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
-                    break
-                elif (i+1) == max_iterations:
-                    print(f"E-step: Stop at iteration {i+1} with loss: {current_loss:.6f}")
-                    print(f'E-step: diff: {diff: .16f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
+            # if i > min_iterations:
+            #     if stopping_criteria == 'absolute':
+            #         diff = abs(prev_loss - current_loss)
+            #     elif stopping_criteria == 'relative':
+            #         diff = abs(prev_loss - current_loss) / (abs(prev_loss) + 1e-8)
+
+            #     if diff < threshold:
+            #         print(f"E-step: Convergence reached at iteration {i+1} with loss: {current_loss:.6f}")
+            #         print(f'E-step: diff: {diff: .16f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
+            #         break
+            #     elif (i+1) == max_iterations:
+            #         print(f"E-step: Stop at iteration {i+1} with loss: {current_loss:.6f}")
+            #         print(f'E-step: diff: {diff: .16f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
 
             prev_loss = current_loss
+
+        diff = abs(prev_loss - current_loss)
+        print(f"E-step: Stop at iteration {i+1} with loss: {current_loss:.6f}")
+        print(f'E-step: diff: {diff: .16f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
+
+        end_time = time.time()  # End timing
+        elapsed_time = end_time - start_time
+        print(f"E_step completed in {elapsed_time:.2f} seconds.")
 
         c = c.detach()
         self.c = c
@@ -153,6 +165,7 @@ class TransportOperator(nn.Module):
         prev_loss = float('inf')
         threshold = initial_threshold * (decay_rate ** self.trans_op_training_counter)
         
+        start_time = time.time()
         for i in range(max_iterations):
             optimizer_psi.zero_grad()
             loss = self.energy_function(pairs, psi, c)
@@ -161,23 +174,31 @@ class TransportOperator(nn.Module):
             
             current_loss = loss.item()
             
-            if i > min_iterations:
-                if stopping_criteria == 'absolute':
-                    diff = abs(prev_loss - current_loss)
-                elif stopping_criteria == 'relative':
-                    diff = abs(prev_loss - current_loss) / (abs(prev_loss) + 1e-8)
+            # if i > min_iterations:
+            #     if stopping_criteria == 'absolute':
+            #         diff = abs(prev_loss - current_loss)
+            #     elif stopping_criteria == 'relative':
+            #         diff = abs(prev_loss - current_loss) / (abs(prev_loss) + 1e-8)
 
-                if diff < threshold:
-                    print(f"M-step: Convergence reached at iteration {i+1} with loss: {current_loss:.6f}")
-                    print(f'M-step: diff: {diff: .16f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
-                    break
-                elif (i+1) == max_iterations:
-                    print(f"M-step: Stop at iteration {i+1} with loss: {current_loss:.6f}")
-                    print(f'M-step: diff: {diff: .16f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
+            #     if diff < threshold:
+            #         print(f"M-step: Convergence reached at iteration {i+1} with loss: {current_loss:.6f}")
+            #         print(f'M-step: diff: {diff: .16f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
+            #         break
+            #     elif (i+1) == max_iterations:
+            #         print(f"M-step: Stop at iteration {i+1} with loss: {current_loss:.6f}")
+            #         print(f'M-step: diff: {diff: .16f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
 
             prev_loss = current_loss
 
         threshold *= decay_rate
+
+        diff = abs(prev_loss - current_loss)
+        print(f"M-step: Stop at iteration {i+1} with loss: {current_loss:.6f}")
+        print(f'M-step: diff: {diff: .16f}; prev_loss: {prev_loss: .6f}; current_loss: {current_loss: .6f}')
+
+        end_time = time.time()  # End timing
+        elapsed_time = end_time - start_time
+        print(f"M_step completed in {elapsed_time:.2f} seconds.")
 
         self.psi, self.c = self.filter_psi(psi.detach(),c)
         return self.psi, self.c
