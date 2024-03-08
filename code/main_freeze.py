@@ -37,7 +37,7 @@ def get_args_parser():
     parser.add_argument("--lr_eta_E", type=float, default=1e-5, help="Learning rate for TO E-step.")
     parser.add_argument("--lr_eta_M", type=float, default=1e-6, help="Learning rate for TO M-step.")
     parser.add_argument("--M", type=int, default=4, help="Some hyperparameter M.")
-    #parser.add_argument("--max_iterations", type=int, default=5, help="Maximum number of iterations.")
+    parser.add_argument("--max_iterations", type=int, default=10000, help="Maximum number of iterations.")
 
     # Miscellaneous
     parser.add_argument("--WANDB_LOGGING", type=bool, default=True, help="Flag to enable or disable W&B logging.")

@@ -3,8 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-import time
-
 from sklearn.neighbors import NearestNeighbors
 
 class VAE(nn.Module):
@@ -104,16 +102,12 @@ class TransportOperator(nn.Module):
         c = torch.zeros([batch_size, 1, m], device=device).requires_grad_(True)
         psi = self.psi
         optimizer_c = optim.AdamW([c], self.lr_eta_E)
-
-        start_time = time.time()
+        
         for i in range(max_iterations):
             optimizer_c.zero_grad()
             loss = self.energy_function(pairs, psi, c)
             loss.backward()
             optimizer_c.step()
-        end_time = time.time()
-        elapsed_time = end_time - start_time
-        print(f"E_step completed in {elapsed_time:.2f} seconds.")
 
         c = c.detach()
         self.c = c
@@ -127,15 +121,11 @@ class TransportOperator(nn.Module):
         psi = psi.requires_grad_(True)
         optimizer_psi = optim.AdamW([psi], self.lr_eta_M)
         
-        start_time = time.time()
         for i in range(max_iterations):
             optimizer_psi.zero_grad()
             loss = self.energy_function(pairs, psi, c)
             loss.backward()
             optimizer_psi.step()
-        end_time = time.time()
-        elapsed_time = end_time - start_time
-        print(f"M_step completed in {elapsed_time:.2f} seconds.")
 
         self.psi, self.c = self.filter_psi(psi.detach(),c)
         return self.psi, self.c
