@@ -111,7 +111,6 @@ def main(args):
 
         # TO PART
         if ((epoch+1) == warmup_epoch) or ((epoch-warmup_epoch+1) % args.to_learning_freq == 0):
-            # transport_operator.update_to_training_counter()
             # Train transport operator
             total_energy, total_recon_loss, total_trans_op_loss, total_coef_loss = train_transport_operator(train_loader, 
                                                                                                             vae, 
