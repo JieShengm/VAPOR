@@ -14,7 +14,6 @@ def train_transport_operator(train_loader, vae, transport_operator, train_vaeto,
 
     for mini_batch, data in enumerate(train_loader):
         if mini_batch < to_learning_n_minibatch:
-            print(f"mini batch{mini_batch}: TO learning... (max_iterations = {max_iterations}")
             data = data.float().to(device)
             with torch.no_grad():
                 z0, _, _ = vae.Encode(data)
