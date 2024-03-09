@@ -30,14 +30,15 @@ def get_args_parser():
     parser.add_argument("--total_epochs", type=int, default=1000, help="Total number of training epochs.")
     parser.add_argument("--checkpoint_freq", type=int, default=20, help="Frequency of saving checkpoints.")
     parser.add_argument("--to_learning_freq", type=int, default=20, help="Frequency to switch phases.")
-    
+    parser.add_argument("--to_learning_n_minibatch", type=int, default=5, help="Number of TO learning minibatches.")
+
     # TO Hyperparameters
     parser.add_argument("--zeta", type=float, default=0.01, help="Regularization parameter for sparsity.")
     parser.add_argument("--gamma", type=float, default=1e-3, help="Regularization parameter for dictionary.")
     parser.add_argument("--lr_eta_E", type=float, default=1e-5, help="Learning rate for TO E-step.")
     parser.add_argument("--lr_eta_M", type=float, default=1e-6, help="Learning rate for TO M-step.")
     parser.add_argument("--M", type=int, default=4, help="Some hyperparameter M.")
-    parser.add_argument("--max_iterations", type=int, default=10000, help="Maximum number of iterations.")
+    parser.add_argument("--max_iterations", type=int, default=1000, help="Maximum number of iterations.")
 
     # Miscellaneous
     parser.add_argument("--WANDB_LOGGING", type=bool, default=True, help="Flag to enable or disable W&B logging.")
@@ -123,6 +124,7 @@ def main(args):
             total_energy, total_recon_loss, total_trans_op_loss, total_coef_loss = train_transport_operator(train_loader, 
                                                                                                             vae, 
                                                                                                             transport_operator, 
+                                                                                                            train_vaeto,
                                                                                                             device, 
                                                                                                             args)
             # Logging to wandb
