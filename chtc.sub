@@ -1,0 +1,23 @@
+universe = vanilla
+log = $(Cluster).log
+output = $(Cluster).out
+error = $(Cluster).err
+
+executable = test_TO_learning_U.sh
+
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+
+transfer_input_files = http://proxy.chtc.wisc.edu/SQUID/chtc/python38.tar.gz, code/model.py, code/utilities.py, code/main_freeze.py, code/train.py, environment.yml
+Requirements = (Target.HasCHTCStaging == true)
+
++WantGPULab = true
++GPUJobLength = "medium" 
+require_gpus = (Capability >= 7.5) && (GlobalMemoryMb >= 11000)
+
+request_cpus = 1
+request_gpus = 1
+request_memory = 25GB
+request_disk = 50GB
+
+queue 1
