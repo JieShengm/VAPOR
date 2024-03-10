@@ -28,8 +28,8 @@ def get_args_parser():
     # Training phase/epoch
     parser.add_argument("--warmup_epoch", type=int, default=200, help="Number of epochs for warmup.")
     parser.add_argument("--total_epochs", type=int, default=1000, help="Total number of training epochs.")
-    parser.add_argument("--checkpoint_freq", type=int, default=20, help="Frequency of saving checkpoints.")
-    parser.add_argument("--to_learning_freq", type=int, default=20, help="Frequency to switch phases.")
+    parser.add_argument("--checkpoint_freq", type=int, default=5, help="Frequency of saving checkpoints.")
+    parser.add_argument("--to_learning_freq", type=int, default=5, help="Frequency to switch phases.")
     parser.add_argument("--to_learning_n_minibatch", type=int, default=5, help="Number of TO learning minibatches.")
 
     # TO Hyperparameters
