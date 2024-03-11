@@ -15,7 +15,7 @@ def get_args_parser():
     parser = argparse.ArgumentParser(description="Train VAE.")
     
     parser.add_argument("--data_path", type=str, default='./data/Pasca/val_pasca_subset_expr.csv', help="Data Path.")
-    parser.add_argument("--checkpoint_name", type=str, default=None, help="Path to a saved checkpoint to restart training.")
+    parser.add_argument("--checkpoint_name", type=str, default='checkpoint.pth', help="Path to a saved checkpoint to restart training.")
 
     # VAE Hyperparameters
     parser.add_argument("--latent_dim", type=int, default=8, help="Dimensionality of the latent space.")
@@ -78,10 +78,14 @@ def main(args):
     print("Transport Operator initialization finished.")
 
     optimizer_vae = optim.Adam(vae.parameters(), lr=args.lr_vae)
-
-    start_epoch = 0
+    
     warmup_epoch = args.warmup_epoch
-    if args.checkpoint_name:
+    chkpt_exists = os.path.exists("args.checkpoint_name")
+    if not chkpt_exists:
+        print("chkpt doesn't exist")
+        start_epoch = 0
+    else:
+        print("chkpt exists")
         checkpoint_path = os.path.join(args.output_dir, args.checkpoint_name)
         start_epoch = load_checkpoint(checkpoint_path, vae, device, optimizer_vae) + 1
         print(f"Resuming training from epoch {start_epoch}")
@@ -116,6 +120,7 @@ def main(args):
                           'psi':transport_operator.psi}
             checkpoint_path = os.path.join(args.output_dir, f"vae_warmup_init.pth")
             torch.save(checkpoint, checkpoint_path)
+            torch.save(checkpoint, os.path.join(args.output_dir, f"checkpoint_init.pth"))
 
         # TO PART
         train_to = ((epoch+1) == warmup_epoch) or ((epoch+1) > warmup_epoch and (epoch+1 - warmup_epoch) % args.to_learning_freq == 0)
@@ -143,6 +148,7 @@ def main(args):
                           'psi':transport_operator.psi}
             checkpoint_path = os.path.join(args.output_dir, f"vae_warmup_epoch{epoch}.pth")
             torch.save(checkpoint, checkpoint_path)
+            torch.save(checkpoint, os.path.join(args.output_dir, f"checkpoint.pth"))
         elif train_vaeto and ((epoch+1-warmup_epoch) % args.checkpoint_freq == 0):
             checkpoint = {'epoch': epoch,
                           'model_state_dict': vae.state_dict(),
@@ -150,6 +156,7 @@ def main(args):
                           'psi':transport_operator.psi}
             checkpoint_path = os.path.join(args.output_dir, f"vae_epoch{epoch}.pth")
             torch.save(checkpoint, checkpoint_path)
+            torch.save(checkpoint, os.path.join(args.output_dir, f"checkpoint.pth"))
  
 if __name__ == "__main__":
     args = get_args_parser()
