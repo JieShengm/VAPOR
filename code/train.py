@@ -59,8 +59,9 @@ def train_vae(train_loader, vae, transport_operator, optimizer_vae, train_vaeto,
             z0, _, _ = vae.Encode(data)
             pairs = construct_pairs(z0)
 
+            max_iterations = max(3000, args.max_iterations) 
             start_time = time.time()
-            psi, c = transport_operator.E_step(pairs, max_iterations=args.max_iterations)
+            psi, c = transport_operator.E_step(pairs, max_iterations=max_iterations)
             end_time = time.time()
             elapsed_time = end_time - start_time
             print(f"VAE (fit c): E_step completed in {elapsed_time:.2f} seconds. (max_iterations = {max_iterations})")
