@@ -6,8 +6,8 @@ from pathlib import Path
 import torch
 import torch.optim as optim
 
-from model import VAE, TransportOperator
-from train import train_vae, train_transport_operator
+from model_mu import VAE, TransportOperator
+from train_mu import train_vae, train_transport_operator
 from utilities import get_dataloader, load_checkpoint
 
 
@@ -110,7 +110,7 @@ def main(args):
             wandb.log({"VAE_loss": train_loss / len(train_loader.dataset),
                        "VAE_BCE": total_bce / len(train_loader.dataset),
                        "VAE_KLD": total_kld / len(train_loader.dataset),
-                       "VAE_MSE": total_to_transformed_mse / len(train_loader.dataset)})
+                       "VAE_mu_MSE": total_to_transformed_mse / len(train_loader.dataset)})
         if not train_vaeto:
             print(f'Epoch {epoch} (warmup, conventional vae), Loss: {train_loss / len(train_loader.dataset): .6f}')
         else:
