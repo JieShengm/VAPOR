@@ -80,14 +80,14 @@ def main(args):
     optimizer_vae = optim.Adam(vae.parameters(), lr=args.lr_vae)
     
     warmup_epoch = args.warmup_epoch
-    chkpt_exists = os.path.exists("args.checkpoint_name")
+    chkpt_exists = os.path.exists(args.checkpoint_name)
     if not chkpt_exists:
         print("chkpt doesn't exist")
         start_epoch = 0
     else:
         print("chkpt exists")
-        checkpoint_path = os.path.join(args.output_dir, args.checkpoint_name)
-        start_epoch = load_checkpoint(checkpoint_path, vae, device, optimizer_vae) + 1
+        #checkpoint_path = os.path.join(args.output_dir, args.checkpoint_name)
+        start_epoch = load_checkpoint(args.checkpoint_name, vae, device, optimizer_vae) + 1
         print(f"Resuming training from epoch {start_epoch}")
 
     vae.train()
@@ -120,7 +120,7 @@ def main(args):
                           'psi':transport_operator.psi}
             checkpoint_path = os.path.join(args.output_dir, f"vae_warmup_init.pth")
             torch.save(checkpoint, checkpoint_path)
-            torch.save(checkpoint, os.path.join(args.output_dir, f"checkpoint_init.pth"))
+            torch.save(checkpoint, f"./checkpoint_init.pth")
 
         # TO PART
         train_to = ((epoch+1) == warmup_epoch) or ((epoch+1) > warmup_epoch and (epoch+1 - warmup_epoch) % args.to_learning_freq == 0)
@@ -148,7 +148,7 @@ def main(args):
                           'psi':transport_operator.psi}
             checkpoint_path = os.path.join(args.output_dir, f"vae_warmup_epoch{epoch}.pth")
             torch.save(checkpoint, checkpoint_path)
-            torch.save(checkpoint, os.path.join(args.output_dir, f"checkpoint.pth"))
+            torch.save(checkpoint, f"./checkpoint.pth")
         elif train_vaeto and ((epoch+1-warmup_epoch) % args.checkpoint_freq == 0):
             checkpoint = {'epoch': epoch,
                           'model_state_dict': vae.state_dict(),
@@ -156,7 +156,7 @@ def main(args):
                           'psi':transport_operator.psi}
             checkpoint_path = os.path.join(args.output_dir, f"vae_epoch{epoch}.pth")
             torch.save(checkpoint, checkpoint_path)
-            torch.save(checkpoint, os.path.join(args.output_dir, f"checkpoint.pth"))
+            torch.save(checkpoint, f"./checkpoint.pth")
  
 if __name__ == "__main__":
     args = get_args_parser()
@@ -164,7 +164,7 @@ if __name__ == "__main__":
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
-    current_time = datetime.datetime.now().strftime("%Y-%m-%d-%H:%M")
+    current_time = datetime.datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
     name = f"{current_time}"
     if args.WANDB_LOGGING:
         import wandb
