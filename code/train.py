@@ -9,7 +9,7 @@ def train_transport_operator(train_loader, vae, transport_operator, train_vaeto,
         max_iterations = max(5000, args.max_iterations)
         # to_learning_n_minibatch = float('inf')
     else:
-        max_iterations = max(500, args.max_iterations)
+        max_iterations = max(2500, args.max_iterations)
         # to_learning_n_minibatch = args.to_learning_n_minibatch
 
     for mini_batch, data in enumerate(train_loader):
@@ -59,7 +59,7 @@ def train_vae(train_loader, vae, transport_operator, optimizer_vae, train_vaeto,
             z0, _, _ = vae.Encode(data)
             pairs = construct_pairs(z0)
 
-            max_iterations = max(500, args.max_iterations) 
+            max_iterations = max(2500, args.max_iterations) 
             start_time = time.time()
             psi, c = transport_operator.E_step(pairs, max_iterations=max_iterations)
             end_time = time.time()
