@@ -29,8 +29,8 @@ def get_args_parser():
     parser.add_argument("--warmup_epoch", type=int, default=200, help="Number of epochs for warmup.")
     parser.add_argument("--total_epochs", type=int, default=1000, help="Total number of training epochs.")
     parser.add_argument("--checkpoint_freq", type=int, default=5, help="Frequency of saving checkpoints.")
-    parser.add_argument("--to_learning_freq", type=int, default=5, help="Frequency to switch phases.")
-#    parser.add_argument("--to_learning_n_minibatch", type=int, default=5, help="Number of TO learning minibatches.")
+    parser.add_argument("--to_learning_freq", type=int, default=1, help="Frequency to switch phases.")
+    parser.add_argument("--to_learning_n_minibatch", type=int, default=5, help="Number of TO learning minibatches.")
 
     # TO Hyperparameters
     parser.add_argument("--zeta", type=float, default=0.01, help="Regularization parameter for sparsity.")
@@ -95,13 +95,17 @@ def main(args):
 
         # VAE PART    
         train_vaeto = epoch >= warmup_epoch
-        train_loss, total_bce, total_kld, total_to_transformed_mse = train_vae(train_loader, 
-                                                                               vae, 
-                                                                               transport_operator, 
-                                                                               optimizer_vae, 
-                                                                               train_vaeto, 
-                                                                               device, 
-                                                                               args)
+        if not train_vaeto:
+            train_loss, total_bce, total_kld, total_to_transformed_mse = train_vae(train_loader, 
+                                                                                    vae, 
+                                                                                    transport_operator, 
+                                                                                    optimizer_vae, 
+                                                                                    False, 
+                                                                                    device, 
+                                                                                    args)
+        else: 
+            print('do not train vaeto')
+            
         # Logging to wandb
         if args.WANDB_LOGGING:
             wandb.log({"VAE_loss": train_loss / len(train_loader.dataset),

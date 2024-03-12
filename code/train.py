@@ -7,40 +7,40 @@ def train_transport_operator(train_loader, vae, transport_operator, train_vaeto,
 
     if not train_vaeto:
         max_iterations = max(10000, args.max_iterations)
-        to_learning_n_minibatch = float('inf')
+        # to_learning_n_minibatch = float('inf')
     else:
         max_iterations = max(3000, args.max_iterations)
-        to_learning_n_minibatch = args.to_learning_n_minibatch
+        # to_learning_n_minibatch = args.to_learning_n_minibatch
 
     for mini_batch, data in enumerate(train_loader):
-        if mini_batch < to_learning_n_minibatch:
-            data = data.float().to(device)
-            with torch.no_grad():
-                z0, _, _ = vae.Encode(data)
-            pairs = construct_pairs(z0)
+        # if mini_batch < to_learning_n_minibatch:
+        data = data.float().to(device)
+        with torch.no_grad():
+            z0, _, _ = vae.Encode(data)
+        pairs = construct_pairs(z0)
 
-            start_time = time.time()
-            psi, c = transport_operator.E_step(pairs, max_iterations=max_iterations)
-            end_time = time.time()
-            elapsed_time = end_time - start_time
-            print(f"mini batch{mini_batch}: E_step completed in {elapsed_time:.2f} seconds. (max_iterations = {max_iterations})")
-            
-            start_time = time.time()
-            psi, c = transport_operator.M_step(pairs, psi, c, max_iterations=max_iterations)
-            end_time = time.time()
-            elapsed_time = end_time - start_time
-            print(f"mini batch{mini_batch}: M_step completed in {elapsed_time:.2f} seconds. (max_iterations = {max_iterations})")
-            
-            # Compute norms and losses
-            psi_norm_squared = torch.norm(psi, p='fro', dim=[0, 1])**2
-            for i in range(psi_norm_squared.size(0)):
-                print(f"psi {i} norm: {psi_norm_squared[i].item():.12f}")
-            
-            energy, recon_loss, trans_op_loss, coef_loss = transport_operator.energy_function(pairs, psi, c, return_all=True)
-            total_energy += energy
-            total_recon_loss += recon_loss
-            total_trans_op_loss += trans_op_loss
-            total_coef_loss += coef_loss
+        start_time = time.time()
+        psi, c = transport_operator.E_step(pairs, max_iterations=max_iterations)
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        print(f"mini batch{mini_batch}: E_step completed in {elapsed_time:.2f} seconds. (max_iterations = {max_iterations})")
+        
+        start_time = time.time()
+        psi, c = transport_operator.M_step(pairs, psi, c, max_iterations=max_iterations)
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        print(f"mini batch{mini_batch}: M_step completed in {elapsed_time:.2f} seconds. (max_iterations = {max_iterations})")
+        
+        # Compute norms and losses
+        psi_norm_squared = torch.norm(psi, p='fro', dim=[0, 1])**2
+        for i in range(psi_norm_squared.size(0)):
+            print(f"psi {i} norm: {psi_norm_squared[i].item():.12f}")
+        
+        energy, recon_loss, trans_op_loss, coef_loss = transport_operator.energy_function(pairs, psi, c, return_all=True)
+        total_energy += energy
+        total_recon_loss += recon_loss
+        total_trans_op_loss += trans_op_loss
+        total_coef_loss += coef_loss
     return total_energy, total_recon_loss, total_trans_op_loss, total_coef_loss
 
 def train_vae(train_loader, vae, transport_operator, optimizer_vae, train_vaeto, device, args):
