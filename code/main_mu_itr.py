@@ -6,8 +6,8 @@ from pathlib import Path
 import torch
 import torch.optim as optim
 
-from model import VAE, TransportOperator
-from train import train_vae, train_transport_operator
+from model_mu import VAE, TransportOperator
+from train_mu import train_vae, train_transport_operator
 from utilities import get_dataloader, load_checkpoint
 
 
@@ -29,7 +29,7 @@ def get_args_parser():
     parser.add_argument("--warmup_epoch", type=int, default=200, help="Number of epochs for warmup.")
     parser.add_argument("--total_epochs", type=int, default=1000, help="Total number of training epochs.")
     parser.add_argument("--checkpoint_freq", type=int, default=5, help="Frequency of saving checkpoints.")
-    parser.add_argument("--to_learning_freq", type=int, default=1, help="Frequency to switch phases.") 
+    parser.add_argument("--to_learning_freq", type=int, default=5, help="Frequency to switch phases.") 
 
     # TO Hyperparameters
     parser.add_argument("--zeta", type=float, default=0.01, help="Regularization parameter for sparsity.")
@@ -54,8 +54,8 @@ def main(args):
     else:
         device = "cpu"
         
-    print(f"Using device: {device}")
-    
+    print(f"Using device: {device}") 
+
     print(f"Start loading data")
     train_loader, input_dim = get_dataloader(data_path=args.data_path,
                                             batch_size=args.batch_size,
@@ -100,23 +100,20 @@ def main(args):
 
         # VAE PART    
         train_vaeto = epoch >= warmup_epoch
-        if not train_vaeto:
-            train_loss, total_bce, total_kld, total_to_transformed_mse = train_vae(train_loader, 
-                                                                                    vae, 
-                                                                                    transport_operator, 
-                                                                                    optimizer_vae, 
-                                                                                    False, 
-                                                                                    device, 
-                                                                                    args)
-        else: 
-            print('do not train vaeto')
+        train_loss, total_bce, total_kld, total_to_transformed_mse = train_vae(train_loader, 
+                                                                                vae, 
+                                                                                transport_operator, 
+                                                                                optimizer_vae, 
+                                                                                train_vaeto, 
+                                                                                device, 
+                                                                                args)
             
         # Logging to wandb
         if args.WANDB_LOGGING:
             wandb.log({"VAE_loss": train_loss / len(train_loader.dataset),
                        "VAE_BCE": total_bce / len(train_loader.dataset),
                        "VAE_KLD": total_kld / len(train_loader.dataset),
-                       "VAE_MSE": total_to_transformed_mse / len(train_loader.dataset)})
+                       "VAE_mu_MSE": total_to_transformed_mse / len(train_loader.dataset)})
         if not train_vaeto:
             print(f'Epoch {epoch} (warmup, conventional vae), Loss: {train_loss / len(train_loader.dataset): .6f}')
         else:
