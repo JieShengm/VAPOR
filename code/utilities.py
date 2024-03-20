@@ -4,7 +4,18 @@ import torch
 
 class Dataset(Dataset):
     def __init__(self, data_path, header=None, transform=None):
-        self.data = pd.read_csv(data_path, header=header).to_numpy()
+        # self.data = pd.read_csv(data_path, header=header).to_numpy()
+        if data_path.endswith('.csv'):
+            self.data = pd.read_csv(data_path, header=header).to_numpy()
+            print(f'n_OBS: {self.data.shape[0]}; n_VAR: {self.data.shape[1]}')
+        elif data_path.endswith('.h5ad'):
+            import anndata as ad
+            h5ad_data = ad.read_h5ad(data_path)
+            self.data = h5ad_data.X.toarray()
+            print(f'n_OBS: {self.data.shape[0]}; n_VAR: {self.data.shape[1]}')
+        else:
+            raise AssertionError("The file format is not supported/available now.")
+
         self.transform = transform
 
     def __len__(self):
