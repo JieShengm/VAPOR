@@ -80,14 +80,8 @@ class TransportOperator(nn.Module):
                  lr_eta_M):
         super(TransportOperator, self).__init__() 
 
-    #    device = torch.device("cuda" if torch.cuda.is_available() else "cpu") ## change this later
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-        elif torch.backends.mps.is_available():
-            device = torch.device("mps")
-        else:
-            device = "cpu"
-        self.psi = torch.empty([latent_dim, latent_dim, M]).normal_(mean=0,std=0.1).to(device, non_blocking=True)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu") ## change this later
+        self.psi = torch.empty([latent_dim, latent_dim, M]).normal_(mean=0,std=0.1).to(device)
         self.c = None
         self.gamma = gamma
         self.zeta = zeta
@@ -103,7 +97,7 @@ class TransportOperator(nn.Module):
         batch_size = pairs[0].shape[0]
         m = self.psi.shape[2]
         
-        c = torch.zeros([batch_size, 1, m]).to(device, non_blocking=True).requires_grad_(True)
+        c = torch.zeros([batch_size, 1, m]).to(device).requires_grad_(True)
         psi = self.psi
         optimizer_c = optim.AdamW([c], self.lr_eta_E)
         
@@ -167,8 +161,8 @@ class TransportOperator(nn.Module):
 def construct_pairs(z0, n_neighbors=10):
     nbrs = NearestNeighbors(n_neighbors=n_neighbors+1, algorithm='ball_tree').fit(z0.detach().cpu())
     distances, indices = nbrs.kneighbors(z0.detach().cpu())
-    indices = torch.tensor(indices).to(z0.device, non_blocking=True) 
-    distances = torch.tensor(distances).float().to(z0.device, non_blocking=True)
+    indices = torch.tensor(indices).to(z0.device) 
+    distances = torch.tensor(distances).float().to(z0.device)
 
     rho = torch.min(distances[:, 1:], dim=1).values
     sigma = torch.std(distances[:, 1:], dim=1)
@@ -183,9 +177,6 @@ def construct_pairs(z0, n_neighbors=10):
 def vae_to_loss(x, recon_x, mu, logvar,  mu_ast=None):
     BCE = nn.functional.mse_loss(recon_x, x, reduction='sum')
     KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-    # print('mu.pow(2): ', mu.pow(2))
-    # print('logvar.exp(): ',logvar.exp())
-    # print('logvar: ', logvar)
     if mu_ast is not None:
         MSE = nn.functional.mse_loss(mu_ast, mu, reduction='sum')
         return BCE, KLD, MSE
