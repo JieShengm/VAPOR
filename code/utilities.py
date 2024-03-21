@@ -14,7 +14,7 @@ class Dataset(Dataset):
             import anndata as ad
             self.file = 'h5ad'
             h5ad_data = ad.read_h5ad(data_path)
-            self.data = h5ad_data.X.toarray()
+            self.data = h5ad_data.X#.toarray()
             print(f'n_OBS: {self.data.shape[0]}; n_VAR: {self.data.shape[1]}')
         else:
             raise AssertionError("The file format is not supported/available now.")
