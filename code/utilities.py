@@ -7,14 +7,14 @@ class Dataset(Dataset):
         self.file = None
         # self.data = pd.read_csv(data_path, header=header).to_numpy()
         if data_path.endswith('.csv'):
-            self.file = 'csv'
+            # self.file = 'csv'
             self.data = pd.read_csv(data_path, header=header).to_numpy()
             print(f'n_OBS: {self.data.shape[0]}; n_VAR: {self.data.shape[1]}')
         elif data_path.endswith('.h5ad'):
             import anndata as ad
-            self.file = 'h5ad'
+            # self.file = 'h5ad'
             h5ad_data = ad.read_h5ad(data_path)
-            self.data = h5ad_data.X#.toarray()
+            self.data = h5ad_data.X.toarray()
             print(f'n_OBS: {self.data.shape[0]}; n_VAR: {self.data.shape[1]}')
         else:
             raise AssertionError("The file format is not supported/available now.")
@@ -25,10 +25,11 @@ class Dataset(Dataset):
         return self.data.shape[0]
 
     def __getitem__(self, idx):
-        if self.file == 'csv':
-            sample = self.data[idx, :]
-        elif self.file == 'h5ad':
-            sample = self.data[idx].toarray()
+        # if self.file == 'csv':
+        #     sample = self.data[idx, :]
+        # elif self.file == 'h5ad':
+        #     sample = self.data[idx].toarray() #slow
+        sample = self.data[idx, :]
         
         if self.transform:
             sample = self.transform(sample)
