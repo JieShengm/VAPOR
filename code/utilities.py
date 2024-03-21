@@ -4,12 +4,15 @@ import torch
 
 class Dataset(Dataset):
     def __init__(self, data_path, header=None, transform=None):
+        self.file = None
         # self.data = pd.read_csv(data_path, header=header).to_numpy()
         if data_path.endswith('.csv'):
+            self.file = 'csv'
             self.data = pd.read_csv(data_path, header=header).to_numpy()
             print(f'n_OBS: {self.data.shape[0]}; n_VAR: {self.data.shape[1]}')
         elif data_path.endswith('.h5ad'):
             import anndata as ad
+            self.file = 'h5ad'
             h5ad_data = ad.read_h5ad(data_path)
             self.data = h5ad_data.X.toarray()
             print(f'n_OBS: {self.data.shape[0]}; n_VAR: {self.data.shape[1]}')
@@ -22,7 +25,11 @@ class Dataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-        sample = self.data[idx, :]
+        if self.file == 'csv':
+            sample = self.data[idx, :]
+        elif self.file == 'h5ad':
+            sample = self.data[idx].toarray()
+        
         if self.transform:
             sample = self.transform(sample)
         return sample
