@@ -22,7 +22,7 @@ class Dataset(Dataset):
         self.transform = transform
 
     def __len__(self):
-        return len(self.data)
+        return self.data.shape[0]
 
     def __getitem__(self, idx):
         if self.file == 'csv':
