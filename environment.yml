@@ -6,11 +6,11 @@ channels:
   - bioconda
   - defaults
 dependencies:
-  - nvidia::cudatoolkit=11.1
+  - nvidia::cudatoolkit=12.1
   - numpy
   - python=3.9
-  - pytorch::pytorch=1.9
-  - pytorch::torchvision=0.10
+  - pytorch::pytorch
+  - pytorch::torchvision
   - conda-forge::wandb
   - pandas
   - conda-forge::scikit-learn
