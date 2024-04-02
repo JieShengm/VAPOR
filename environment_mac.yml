@@ -6,7 +6,7 @@ channels:
   - defaults
 dependencies:
   - numpy
-  - python=3.10
+  - python=3.8
   - pytorch::pytorch
   - pytorch::torchvision
   - conda-forge::wandb
