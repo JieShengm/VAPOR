@@ -7,6 +7,7 @@ channels:
 dependencies:
   - numpy
   - python=3.8
+  - cellrank
   - pytorch::pytorch
   - pytorch::torchvision
   - conda-forge::wandb
