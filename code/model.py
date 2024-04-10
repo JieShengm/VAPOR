@@ -4,11 +4,13 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 from sklearn.neighbors import NearestNeighbors
+from utilities import plot_pairs
 
 class VAE(nn.Module):
     def __init__(self, 
                  input_dim, 
                  latent_dim, 
+                 psi_M,
                  encoder_dims=[512, 256], 
                  decoder_dims=[256, 512]):
         
@@ -21,6 +23,7 @@ class VAE(nn.Module):
         
         self.fc_mu = nn.Linear(encoder_dims[-1], latent_dim)
         self.fc_logvar = nn.Linear(encoder_dims[-1], latent_dim)
+        self.convert_mu_nbrs = nn.Linear(latent_dim*psi_M, latent_dim, bias=False)
         
         decoder_layers = []
         for in_dim, out_dim in zip([latent_dim] + decoder_dims[:-1], decoder_dims):
@@ -28,6 +31,13 @@ class VAE(nn.Module):
         decoder_layers.append(nn.Linear(decoder_dims[-1], input_dim))
         #decoder_layers.append(nn.LeakyReLU())  # Adjust the final activation as needed
         self.decoder = nn.Sequential(*decoder_layers)
+        
+        # decoder2_layers = []
+        # for in_dim, out_dim in zip([latent_dim] + decoder_dims[:-1], decoder_dims):
+        #     decoder2_layers.extend([nn.Linear(in_dim, out_dim), nn.ReLU()])
+        # decoder2_layers.append(nn.Linear(decoder_dims[-1], input_dim))
+        # #decoder_layers.append(nn.LeakyReLU())  # Adjust the final activation as needed
+        # self.decoder2 = nn.Sequential(*decoder2_layers)
 
     def reparameterize(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
@@ -38,37 +48,46 @@ class VAE(nn.Module):
         x = self.encoder(x)
         mu = self.fc_mu(x)
         logvar = self.fc_logvar(x)
-        z0 = self.reparameterize(mu, logvar)
-        return z0, mu, logvar
+        return mu, logvar
     
     def Decode(self, z):
         return self.decoder(z)
 
-    def forward(self, x, z0_ast=None):
-        z0, mu, logvar = self.Encode(x)
-        if z0_ast is not None:
-            z = z0_ast
+    def forward(self, x, mu_nbrs=None):
+        mu, logvar = self.Encode(x)
+        if mu_nbrs is not None:
+            m, batch_size, latent_dim = mu_nbrs.shape
+            mu_nbrs = mu_nbrs.permute(1, 0, 2).reshape(batch_size, latent_dim * m)
+            mu_ast = self.convert_mu_nbrs(mu_nbrs)
         else:
-            z = z0
+            mu_ast = mu
+        z = self.reparameterize(mu_ast, logvar)
         reconstructed = self.Decode(z)
-        return reconstructed, z0, mu, logvar
+        return reconstructed, z, mu_ast, logvar
+    
+    # def transform_psi(self, z_nbrs, psi):
+    #     # _, z1 = pairs
+
+    #     # trans_op = torch.matrix_exp(torch.sum(torch.einsum('bim,jkm->bjkm', c, psi), dim=-1))
+    #     batch_size, _, _ = z_nbrs.shape
+    #     z_ast = torch.zeros_like(z_nbrs)
+    #     print('z_nbrs.shape: ', z_nbrs.shape)
+    #     print('psi shape: ', psi.shape)
+    #     for m in range(psi.shape[2]):
+    #         dets = torch.linalg.det(psi[i])
+    #         # for b in range(batch_size):
+    #         if dets != 0:
+    #             psi_i_inv = torch.linalg.inv(psi)
+    #             z_ast[m] = torch.einsum('ij,bj->bi', psi_i_inv, z_nbrs[m,:,:]) #+ 0.001 * torch.randn_like(z1[b], device=device)
+    #         else:
+    #             print(f"Psi {m} is not invertible.")
+    #             return None
+    #     print(z_ast[0,0])
+    #     print(z_ast[1,0])
+    #     print(z_ast[2,0])
+    #     print(z_ast[3,0])
         
-    def transform_trans_op(self, pairs, psi, c):
-        _, z1 = pairs
-
-        trans_op = torch.matrix_exp(torch.sum(torch.einsum('bim,jkm->bjkm', c, psi), dim=-1))
-        batch_size, _, _ = trans_op.shape
-        z0_ast = torch.zeros_like(z1)
-
-        dets = torch.linalg.det(trans_op)
-        for b in range(batch_size):
-            if dets[b] != 0:
-                trans_op_inv = torch.linalg.inv(trans_op[b])
-                z0_ast[b] = torch.einsum('ij,j->i', trans_op_inv, z1[b]) #+ 0.001 * torch.randn_like(z1[b], device=device)
-            else:
-                print(f"Matrix at index {b} is not invertible.")
-                return None
-        return z0_ast
+    #     return z_ast    
 
 class TransportOperator(nn.Module):
     def __init__(self, 
@@ -78,16 +97,15 @@ class TransportOperator(nn.Module):
                  zeta,
                  lr_eta_E,
                  lr_eta_M):
-       
-       super(TransportOperator, self).__init__() 
+        super(TransportOperator, self).__init__() 
 
-       device = torch.device("cuda" if torch.cuda.is_available() else "cpu") ## change this later
-       self.psi = torch.empty([latent_dim, latent_dim, M]).normal_(mean=0,std=0.1).to(device)
-       self.c = None
-       self.gamma = gamma
-       self.zeta = zeta
-       self.lr_eta_E = lr_eta_E
-       self.lr_eta_M = lr_eta_M 
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu") ## change this later
+        self.psi = torch.empty([latent_dim, latent_dim, M]).normal_(mean=0,std=0.1).to(device)
+        self.c = None
+        self.gamma = gamma
+        self.zeta = zeta
+        self.lr_eta_E = lr_eta_E
+        self.lr_eta_M = lr_eta_M 
 
     def E_step(self, 
                pairs, 
@@ -98,7 +116,7 @@ class TransportOperator(nn.Module):
         batch_size = pairs[0].shape[0]
         m = self.psi.shape[2]
         
-        c = torch.zeros([batch_size, 1, m], device=device).requires_grad_(True)
+        c = torch.zeros([batch_size, 1, m]).to(device).requires_grad_(True)
         psi = self.psi
         optimizer_c = optim.AdamW([c], self.lr_eta_E)
         
@@ -126,17 +144,17 @@ class TransportOperator(nn.Module):
             loss.backward()
             optimizer_psi.step()
 
-        self.psi, self.c = self.filter_psi(psi.detach(),c)
+        # self.psi, self.c = self.filter_psi(psi.detach(),c)
         return self.psi, self.c
 
     def energy_function(self, pairs, psi, c, return_all = False):
         z0, z1 = pairs
         batch_size = z0.shape[0]
         trans_op = torch.matrix_exp(torch.sum(torch.einsum('bim,jkm->bjkm', c, psi), dim=-1))
-
         recon_loss = (((z1-torch.einsum('bij,bj->bi', trans_op, z0))**2).sum())/batch_size
         trans_op_loss = (torch.norm(psi, p='fro',dim=[0,1])**2).sum()
         coef_loss = torch.abs(c).sum()
+        
 
         energy = recon_loss + self.gamma * trans_op_loss + self.zeta * coef_loss
         if return_all:
@@ -144,42 +162,70 @@ class TransportOperator(nn.Module):
         else: 
             return energy
 
-    def filter_psi(self, psi, c, epsilon=1e-8):
-        norms = torch.norm(psi, p='fro',dim=[0,1])**2
-        sorted_indices = torch.argsort(norms,descending=True)
-        filtered_indices = sorted_indices[norms[sorted_indices] > epsilon]
-        m = psi.shape[2]
-        m_filtered = filtered_indices.shape[0]
-        if m_filtered==0 or m_filtered==m:
-            psi = psi[:,:,sorted_indices]
-            c = c[:,:,sorted_indices]
-        else:
-            psi = psi[:,:,filtered_indices]
-            c = c[:,:,filtered_indices]
-            print("Filtered M, M = ",m_filtered)
-        return psi, c
+    # def filter_psi(self, psi, c, epsilon=1e-8):
+    #     norms = torch.norm(psi, p='fro',dim=[0,1])**2
+    #     sorted_indices = torch.argsort(norms,descending=True)
+    #     filtered_indices = sorted_indices[norms[sorted_indices] > epsilon]
+    #     print('filtered_indices: (need to modify here for incorporating TO and VAE)', filtered_indices)
+    #     m = psi.shape[2]
+    #     m_filtered = filtered_indices.shape[0]
+    #     if m_filtered==0 or m_filtered==m:
+    #         psi = psi[:,:,sorted_indices]
+    #         c = c[:,:,sorted_indices]
+    #     else:
+    #         psi = psi[:,:,filtered_indices]
+    #         c = c[:,:,filtered_indices]
+    #         print("Filtered M, M = ",m_filtered)
+    #     return psi, c
 
-def construct_pairs(z0, n_neighbors=10):
-    nbrs = NearestNeighbors(n_neighbors=n_neighbors+1, algorithm='ball_tree').fit(z0.detach().cpu())
-    distances, indices = nbrs.kneighbors(z0.detach().cpu())
-    indices = torch.tensor(indices).to(z0.device) 
-    distances = torch.tensor(distances).to(z0.device)
+def construct_pairs(x, n_neighbors=15, psi = None):
+    # Compute nearest neighbors
+    nbrs = NearestNeighbors(n_neighbors=n_neighbors+1, algorithm='ball_tree').fit(x.cpu().numpy())
+    distances, indices = nbrs.kneighbors(x.cpu().numpy())
+    indices = torch.tensor(indices).to(x.device)
+    distances = torch.tensor(distances).float().to(x.device)
 
+    # Basic probabilities based on distances
     rho = torch.min(distances[:, 1:], dim=1).values
     sigma = torch.std(distances[:, 1:], dim=1)
-    probabilities = torch.exp((distances[:, 1:] - rho.unsqueeze(1)) / sigma.unsqueeze(1))
+    probabilities = torch.exp(-(distances[:, 1:] - rho.unsqueeze(1)) / sigma.unsqueeze(1))
     probabilities /= probabilities.sum(dim=1, keepdim=True)
-        
-    chosen_neighbors = torch.multinomial(probabilities, 1).squeeze()
-    chosen_indices = indices[torch.arange(len(z0)), chosen_neighbors + 1]
-    pairs = [z0, z0[chosen_indices]]
-    return pairs
+    # print('probabilities before: ', probabilities[0])
 
-def vae_to_loss(x, recon_x, mu, logvar,  z0_ast=None, z0 = None):
-    BCE = nn.functional.mse_loss(recon_x, x, reduction='sum')
-    KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-    if z0_ast is not None:
-        MSE = nn.functional.mse_loss(z0_ast, z0, reduction='sum')
-        return BCE, KLD, MSE
-    else: 
-        return BCE, KLD
+    from torch.nn.functional import normalize
+    x1 = torch.einsum('mik, bk -> mbi', torch.matrix_exp(psi.permute(2, 0, 1)), x)
+    # print(x1.shape)
+    v_normalized = normalize(x1 - x, p=2, dim=-1)
+    nbrs_indices = indices[:, 1:]
+    direction_vectors = x[nbrs_indices] - x.unsqueeze(1)
+    direction_vectors_normalized = normalize(direction_vectors, p=2, dim=-1) 
+    cos_sim = cos_sim = torch.einsum('ijk,mik->mij', direction_vectors_normalized, v_normalized)
+    epsilon = 1e-5
+    cos_sim = (cos_sim - cos_sim.min(dim=2, keepdim=True)[0] + epsilon) / \
+                (cos_sim.max(dim=2, keepdim=True)[0] - cos_sim.min(dim=2, keepdim=True)[0] + epsilon)  
+                
+    # Average cosine similarity for first neighbor selection
+    mean_cos_sim = cos_sim.mean(dim=0)         
+    adjusted_probabilities_mean = probabilities * mean_cos_sim
+    adjusted_probabilities_mean /= adjusted_probabilities_mean.sum(dim=1, keepdim=True)
+    chosen_indices = []
+    chosen_index = torch.multinomial(adjusted_probabilities_mean, 1).squeeze()
+    chosen_indices.append(indices[torch.arange(len(x)), chosen_index + 1])
+
+    # Adjust probabilities for each neighbor based on its cosine similarity
+    adjusted_probabilities = probabilities * cos_sim
+    for i in range(adjusted_probabilities.shape[0]):
+        adj_probs = adjusted_probabilities[i]
+        adj_probs /= adj_probs.sum(dim=1, keepdim=True)
+        chosen_index = torch.multinomial(adj_probs, 1).squeeze()
+        chosen_indices.append(indices[torch.arange(len(x)), chosen_index + 1])
+        
+    chosen_indices = torch.stack(chosen_indices).to(x.device)
+    nbr_pairs = [x,torch.stack([x[chosen_indices[i]] for i in range(chosen_indices.shape[0])])]
+    return nbr_pairs 
+
+def vae_to_loss(x, recon_x, mu, logvar):
+    batch_size = x.shape[0]
+    BCE = nn.functional.mse_loss(recon_x, x, reduction='sum')/batch_size
+    KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())/batch_size
+    return BCE, KLD

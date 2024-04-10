@@ -14,7 +14,7 @@ from utilities import get_dataloader, load_checkpoint
 def get_args_parser():
     parser = argparse.ArgumentParser(description="Train VAE.")
     
-    parser.add_argument("--data_path", type=str, default='./data/Pasca/val_pasca_subset_expr.csv', help="Data Path.")
+    parser.add_argument("--data_path", type=str, default='./data/Synthetic/spiral5000.csv', help="Data Path.")
     parser.add_argument("--checkpoint_name", type=str, default='checkpoint.pth', help="Path to a saved checkpoint to restart training.")
 
     # VAE Hyperparameters

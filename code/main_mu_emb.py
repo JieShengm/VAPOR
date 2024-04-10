@@ -26,7 +26,7 @@ def get_args_parser():
     parser.add_argument("--batch_size", type=int, default=512, help="Batch size for training.")
 
     # Training phase/epoch
-    parser.add_argument("--warmup_epoch", type=int, default=200, help="Number of epochs for warmup.")
+    parser.add_argument("--warmup_epochs", type=int, default=200, help="Number of epochs for warmup.")
     parser.add_argument("--total_epochs", type=int, default=1000, help="Total number of training epochs.")
     parser.add_argument("--checkpoint_freq", type=int, default=5, help="Frequency of saving checkpoints.")
     parser.add_argument("--to_learning_freq", type=int, default=5, help="Frequency to switch phases.")
@@ -78,7 +78,7 @@ def main(args):
 
     optimizer_vae = optim.Adam(vae.parameters(), lr=args.lr_vae)
     
-    warmup_epoch = args.warmup_epoch
+    warmup_epochs = args.warmup_epochs
     chkpt_exists = os.path.exists(args.checkpoint_name)
     if not chkpt_exists:
         print("chkpt doesn't exist")
@@ -92,7 +92,7 @@ def main(args):
     vae.train()
     for epoch in range(start_epoch, args.total_epochs):
         # VAE PART    
-        train_vaeto = epoch >= warmup_epoch
+        train_vaeto = epoch >= warmup_epochs
         train_loss, total_bce, total_kld, total_to_transformed_mse = 0, 0, 0, 0
         MSE = None
         if train_vaeto:
@@ -164,7 +164,7 @@ def main(args):
                 total_kld += KLD.item()
                 total_to_transformed_mse += MSE.item() if MSE is not None else 0
                 optimizer_vae.step()
-            if (epoch+1) == warmup_epoch:
+            if (epoch+1) == warmup_epochs:
                 
                 checkpoint = {'epoch': epoch,
                               'model_state_dict': vae.state_dict(),
@@ -225,15 +225,15 @@ def main(args):
             print(f'Epoch {epoch} (to), Energy: {total_energy / len(train_loader.dataset): .6f}')
 
         # Checkpoint saving
-        if (epoch+1) == warmup_epoch:
+        if (epoch+1) == warmup_epochs:
             checkpoint = {'epoch': epoch,
                           'model_state_dict': vae.state_dict(),
                           'optimizer_state_dict': optimizer_vae.state_dict(),
                           'psi':transport_operator.psi}
-            checkpoint_path = os.path.join(args.output_dir, f"vae_warmup_epoch{epoch}.pth")
+            checkpoint_path = os.path.join(args.output_dir, f"vae_warmup_epochs{epoch}.pth")
             torch.save(checkpoint, checkpoint_path)
             torch.save(checkpoint, f"./checkpoint.pth")
-        elif train_vaeto and ((epoch+1-warmup_epoch) % args.checkpoint_freq == 0):
+        elif train_vaeto and ((epoch+1-warmup_epochs) % args.checkpoint_freq == 0):
             checkpoint = {'epoch': epoch,
                           'model_state_dict': vae.state_dict(),
                           'optimizer_state_dict': optimizer_vae.state_dict(),

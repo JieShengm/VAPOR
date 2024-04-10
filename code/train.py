@@ -4,20 +4,26 @@ import time
 
 def train_transport_operator(train_loader, vae, transport_operator, train_vaeto, device, args):
     total_energy, total_recon_loss, total_trans_op_loss, total_coef_loss = 0, 0, 0, 0
-
+    
+    print("--TO model--")
     if not train_vaeto:
-        max_iterations = max(5000, args.max_iterations)
+        max_iterations = max(10, args.max_iterations)
         # to_learning_n_minibatch = float('inf')
+        # print('--TO model--: VAE init phase')
     else:
-        max_iterations = max(2500, args.max_iterations)
+        max_iterations = max(10, args.max_iterations)
         # to_learning_n_minibatch = args.to_learning_n_minibatch
+        # print('--TO model--: VAE+TO phase')
 
     for mini_batch, data in enumerate(train_loader):
         # if mini_batch < to_learning_n_minibatch:
         data = data.float().to(device)
         with torch.no_grad():
-            z0, _, _ = vae.Encode(data)
-        pairs = construct_pairs(z0)
+            mu, logvar = vae.Encode(data)
+            # z = vae.reparameterize(mu, logvar)
+        pairs = construct_pairs(mu.detach(), psi = transport_operator.psi.detach())
+        # print(pairs[1].shape)
+        pairs = [pairs[0],pairs[1][0]]
 
         start_time = time.time()
         psi, c = transport_operator.E_step(pairs, max_iterations=max_iterations)
@@ -44,8 +50,8 @@ def train_transport_operator(train_loader, vae, transport_operator, train_vaeto,
     return total_energy, total_recon_loss, total_trans_op_loss, total_coef_loss
 
 def train_vae(train_loader, vae, transport_operator, optimizer_vae, train_vaeto, device, args):
-    train_loss, total_bce, total_kld, total_to_transformed_mse = 0, 0, 0, 0
-    MSE = None
+    train_loss, total_bce, total_kld = 0, 0, 0
+            
     for _, data in enumerate(train_loader):
         data = data.float().to(device)
         optimizer_vae.zero_grad()
@@ -56,25 +62,23 @@ def train_vae(train_loader, vae, transport_operator, optimizer_vae, train_vaeto,
             loss = BCE + KLD
         else:
             # Train VAE with TO integration after warmup
-            z0, _, _ = vae.Encode(data)
-            pairs = construct_pairs(z0)
+            mu, _ = vae.Encode(data)
+            # z = vae.reparameterize(mu, logvar)
+            pairs = construct_pairs(mu.detach(), psi = transport_operator.psi.detach())
 
-            max_iterations = max(2500, args.max_iterations) 
-            start_time = time.time()
-            psi, c = transport_operator.E_step(pairs, max_iterations=max_iterations)
-            end_time = time.time()
-            elapsed_time = end_time - start_time
-            print(f"VAE (fit c): E_step completed in {elapsed_time:.2f} seconds. (max_iterations = {max_iterations})")
-
-            z0_ast = vae.transform_trans_op(pairs, psi, c)
-            recon, _, mu, logvar = vae(data, z0_ast=z0_ast)
-            BCE, KLD, MSE = vae_to_loss(data, recon, mu, logvar, z0_ast, z0)
+            # max_iterations = max(10, args.max_iterations) 
+            # start_time = time.time()
+            # psi, c = transport_operator.E_step([pairs[0],pairs[1][0]], max_iterations=max_iterations)
+            # end_time = time.time()
+            # elapsed_time = end_time - start_time
+            # print(f"VAE (fit c): E_step completed in {elapsed_time:.2f} seconds. (max_iterations = {max_iterations})")
+            recon, _, mu_ast, logvar = vae(data, mu_nbrs = pairs[1][1:])
+            BCE, KLD = vae_to_loss(data, recon, mu_ast, logvar)
             loss = BCE + KLD
 
         loss.backward()
         train_loss += loss.item()
         total_bce += BCE.item()
         total_kld += KLD.item()
-        total_to_transformed_mse += MSE.item() if MSE is not None else 0
         optimizer_vae.step()
-    return train_loss, total_bce, total_kld, total_to_transformed_mse
+    return train_loss, total_bce, total_kld
