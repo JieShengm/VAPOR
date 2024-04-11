@@ -188,7 +188,7 @@ def construct_pairs(x, n_neighbors=15, psi = None):
     # Basic probabilities based on distances
     rho = torch.min(distances[:, 1:], dim=1).values
     sigma = torch.std(distances[:, 1:], dim=1)
-    probabilities = torch.exp(-(distances[:, 1:] - rho.unsqueeze(1)) / sigma.unsqueeze(1))
+    probabilities = torch.exp((distances[:, 1:] - rho.unsqueeze(1)) / sigma.unsqueeze(1))
     probabilities /= probabilities.sum(dim=1, keepdim=True)
     # print('probabilities before: ', probabilities[0])
 
