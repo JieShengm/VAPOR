@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 from sklearn.neighbors import NearestNeighbors
-from utilities import plot_pairs
+# from utilities import plot_pairs
 
 class VAE(nn.Module):
     def __init__(self, 
