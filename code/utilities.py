@@ -55,23 +55,22 @@ def load_checkpoint(checkpoint_path, model, device, optimizer=None):
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     return checkpoint.get('epoch', -1)  # Return the last completed epoch number, if available
 
-def plot_pairs(z0, z1):
-    fig = plt.figure(figsize=(25, 7.5))
-    ax1 = fig.add_subplot(131)
-    ax1.scatter(z0[:,0].cpu(), z0[:,1].cpu())
-    ax1.set_title('X0')
+# def plot_pairs(z0, z1):
+#     fig = plt.figure(figsize=(25, 7.5))
+#     ax1 = fig.add_subplot(131)
+#     ax1.scatter(z0[:,0].cpu(), z0[:,1].cpu())
+#     ax1.set_title('X0')
 
-    ax2 = fig.add_subplot(132)
-    ax2.scatter(z1[:,0].cpu(), z1[:,1].cpu())
-    ax2.set_title('X1')
+#     ax2 = fig.add_subplot(132)
+#     ax2.scatter(z1[:,0].cpu(), z1[:,1].cpu())
+#     ax2.set_title('X1')
     
-    ax3 = fig.add_subplot(133)
-    ax3.scatter(z0[:,0].cpu(), z0[:,1].cpu(), color='blue', s=10)  
-    ax3.scatter(z1[:,0].cpu(), z1[:,1].cpu(), color='red', s=10)   
-    for i in range(len(z0)):
-        ax3.plot([z0[i,0].cpu(), z1[i,0].cpu()], [z0[i,1].cpu(), z1[i,1].cpu()], color='green')  
-    ax3.set_title('Correspondence')
-    plt.savefig("paired_points_visualization.png")  
-    # plt.show()
-    plt.close(fig) 
-    return 
+#     ax3 = fig.add_subplot(133)
+#     ax3.scatter(z0[:,0].cpu(), z0[:,1].cpu(), color='blue', s=10)  
+#     ax3.scatter(z1[:,0].cpu(), z1[:,1].cpu(), color='red', s=10)   
+#     for i in range(len(z0)):
+#         ax3.plot([z0[i,0].cpu(), z1[i,0].cpu()], [z0[i,1].cpu(), z1[i,1].cpu()], color='green')  
+#     ax3.set_title('Correspondence')
+#     plt.savefig("paired_points_visualization.png")  
+#     plt.close(fig) 
+#     return 
