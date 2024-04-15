@@ -15,6 +15,8 @@ class VAE(nn.Module):
                  decoder_dims=[256, 512]):
         
         super(VAE, self).__init__()
+        self.latent_dim = latent_dim
+        self.psi_M = psi_M
         
         encoder_layers = []
         for in_dim, out_dim in zip([input_dim] + encoder_dims[:-1], encoder_dims):
@@ -23,27 +25,30 @@ class VAE(nn.Module):
         
         self.fc_mu = nn.Linear(encoder_dims[-1], latent_dim)
         self.fc_logvar = nn.Linear(encoder_dims[-1], latent_dim)
-        self.convert_mu_nbrs = nn.Linear(latent_dim*psi_M, latent_dim, bias=False)
+        self.convert_mu_nbrs = nn.Linear(self.latent_dim*self.psi_M, latent_dim, bias=False)
         
         decoder_layers = []
         for in_dim, out_dim in zip([latent_dim] + decoder_dims[:-1], decoder_dims):
             decoder_layers.extend([nn.Linear(in_dim, out_dim), nn.ReLU()])
         decoder_layers.append(nn.Linear(decoder_dims[-1], input_dim))
-        #decoder_layers.append(nn.LeakyReLU())  # Adjust the final activation as needed
         self.decoder = nn.Sequential(*decoder_layers)
-        
-        # decoder2_layers = []
-        # for in_dim, out_dim in zip([latent_dim] + decoder_dims[:-1], decoder_dims):
-        #     decoder2_layers.extend([nn.Linear(in_dim, out_dim), nn.ReLU()])
-        # decoder2_layers.append(nn.Linear(decoder_dims[-1], input_dim))
-        # #decoder_layers.append(nn.LeakyReLU())  # Adjust the final activation as needed
-        # self.decoder2 = nn.Sequential(*decoder2_layers)
 
     def reparameterize(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
         return mu + eps * std
     
+    def update_linear_weights_according_to_psi(self, psi_filtered_indices):
+        if psi_filtered_indices is not None:
+            complete_mask = torch.zeros(self.psi_M, dtype=torch.bool)
+            complete_mask[psi_filtered_indices] = True
+            expanded_mask = complete_mask.repeat_interleave(repeats=self.latent_dim)
+            original_weights = self.convert_mu_nbrs.weight.detach().clone()
+            new_weights = original_weights[:, expanded_mask]
+            self.convert_mu_nbrs.weight = nn.Parameter(new_weights)
+        else:
+            print('No indices provided for filtering.')
+
     def Encode(self, x):
         x = self.encoder(x)
         mu = self.fc_mu(x)
@@ -53,41 +58,19 @@ class VAE(nn.Module):
     def Decode(self, z):
         return self.decoder(z)
 
-    def forward(self, x, mu_nbrs=None):
+    def forward(self, x, mu_nbrs=None,psi_filtered_indices=None):
         mu, logvar = self.Encode(x)
         if mu_nbrs is not None:
             m, batch_size, latent_dim = mu_nbrs.shape
             mu_nbrs = mu_nbrs.permute(1, 0, 2).reshape(batch_size, latent_dim * m)
+            if psi_filtered_indices is not None:
+                self.update_linear_weights_according_to_psi(psi_filtered_indices)
             mu_ast = self.convert_mu_nbrs(mu_nbrs)
         else:
             mu_ast = mu
         z = self.reparameterize(mu_ast, logvar)
         reconstructed = self.Decode(z)
-        return reconstructed, z, mu_ast, logvar
-    
-    # def transform_psi(self, z_nbrs, psi):
-    #     # _, z1 = pairs
-
-    #     # trans_op = torch.matrix_exp(torch.sum(torch.einsum('bim,jkm->bjkm', c, psi), dim=-1))
-    #     batch_size, _, _ = z_nbrs.shape
-    #     z_ast = torch.zeros_like(z_nbrs)
-    #     print('z_nbrs.shape: ', z_nbrs.shape)
-    #     print('psi shape: ', psi.shape)
-    #     for m in range(psi.shape[2]):
-    #         dets = torch.linalg.det(psi[i])
-    #         # for b in range(batch_size):
-    #         if dets != 0:
-    #             psi_i_inv = torch.linalg.inv(psi)
-    #             z_ast[m] = torch.einsum('ij,bj->bi', psi_i_inv, z_nbrs[m,:,:]) #+ 0.001 * torch.randn_like(z1[b], device=device)
-    #         else:
-    #             print(f"Psi {m} is not invertible.")
-    #             return None
-    #     print(z_ast[0,0])
-    #     print(z_ast[1,0])
-    #     print(z_ast[2,0])
-    #     print(z_ast[3,0])
-        
-    #     return z_ast    
+        return reconstructed, z, mu_ast, logvar  
 
 class TransportOperator(nn.Module):
     def __init__(self, 
@@ -102,10 +85,13 @@ class TransportOperator(nn.Module):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu") ## change this later
         self.psi = torch.empty([latent_dim, latent_dim, M]).normal_(mean=0,std=0.1).to(device)
         self.c = None
+        
         self.gamma = gamma
         self.zeta = zeta
         self.lr_eta_E = lr_eta_E
         self.lr_eta_M = lr_eta_M 
+        
+        self.filtered_indices = None
 
     def E_step(self, 
                pairs, 
@@ -144,7 +130,7 @@ class TransportOperator(nn.Module):
             loss.backward()
             optimizer_psi.step()
 
-        # self.psi, self.c = self.filter_psi(psi.detach(),c)
+        self.psi, self.c, self.filtered_indices = self.filter_psi(psi.detach(),c)
         return self.psi, self.c
 
     def energy_function(self, pairs, psi, c, return_all = False):
@@ -162,21 +148,20 @@ class TransportOperator(nn.Module):
         else: 
             return energy
 
-    # def filter_psi(self, psi, c, epsilon=1e-8):
-    #     norms = torch.norm(psi, p='fro',dim=[0,1])**2
-    #     sorted_indices = torch.argsort(norms,descending=True)
-    #     filtered_indices = sorted_indices[norms[sorted_indices] > epsilon]
-    #     print('filtered_indices: (need to modify here for incorporating TO and VAE)', filtered_indices)
-    #     m = psi.shape[2]
-    #     m_filtered = filtered_indices.shape[0]
-    #     if m_filtered==0 or m_filtered==m:
-    #         psi = psi[:,:,sorted_indices]
-    #         c = c[:,:,sorted_indices]
-    #     else:
-    #         psi = psi[:,:,filtered_indices]
-    #         c = c[:,:,filtered_indices]
-    #         print("Filtered M, M = ",m_filtered)
-    #     return psi, c
+    def filter_psi(self, psi, c, epsilon=1e-8):
+        norms = torch.norm(psi, p='fro',dim=[0,1])**2
+        sorted_indices = torch.argsort(norms,descending=True)
+        filtered_indices = sorted_indices[norms[sorted_indices] > epsilon]
+        m = psi.shape[2]
+        m_filtered = filtered_indices.shape[0]
+        if m_filtered==0 or m_filtered==m:
+            psi = psi[:,:,sorted_indices]
+            c = c[:,:,sorted_indices]
+        else:
+            psi = psi[:,:,filtered_indices]
+            c = c[:,:,filtered_indices]
+            print("Filtered M, M = ",m_filtered)
+        return psi, c, filtered_indices
 
 def construct_pairs(x, n_neighbors=15, psi = None):
     # Compute nearest neighbors
@@ -194,7 +179,6 @@ def construct_pairs(x, n_neighbors=15, psi = None):
 
     from torch.nn.functional import normalize
     x1 = torch.einsum('mik, bk -> mbi', torch.matrix_exp(psi.permute(2, 0, 1)), x)
-    # print(x1.shape)
     v_normalized = normalize(x1 - x, p=2, dim=-1)
     nbrs_indices = indices[:, 1:]
     direction_vectors = x[nbrs_indices] - x.unsqueeze(1)

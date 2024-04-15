@@ -26,10 +26,10 @@ def get_args_parser():
     parser.add_argument("--batch_size", type=int, default=512, help="Batch size for training.")
 
     # Training phase/epoch
-    parser.add_argument("--warmup_epoch", type=int, default=150, help="Number of epochs for warmup.")
-    parser.add_argument("--total_epochs", type=int, default=900, help="Total number of training epochs.")
+    parser.add_argument("--warmup_epoch", type=int, default=200, help="Number of epochs for warmup.")
+    parser.add_argument("--total_epochs", type=int, default=1000, help="Total number of training epochs.")
     parser.add_argument("--checkpoint_freq", type=int, default=50, help="Frequency of saving checkpoints.")
-    parser.add_argument("--to_learning_freq", type=int, default=150, help="Frequency to switch phases.") 
+    parser.add_argument("--to_learning_freq", type=int, default=25, help="Frequency to switch phases.") 
 
     # TO Hyperparameters
     parser.add_argument("--zeta", type=float, default=0.01, help="Regularization parameter for sparsity.")
@@ -37,12 +37,12 @@ def get_args_parser():
     parser.add_argument("--lr_eta_E", type=float, default=1e-5, help="Learning rate for TO E-step.")
     parser.add_argument("--lr_eta_M", type=float, default=1e-6, help="Learning rate for TO M-step.")
     parser.add_argument("--M", type=int, default=4, help="Some hyperparameter M.")
-    parser.add_argument("--max_iterations", type=int, default=10000, help="Maximum number of iterations.")
+    parser.add_argument("--max_iterations", type=int, default=10, help="Maximum number of iterations.")
 
     # Miscellaneous
     parser.add_argument("--WANDB_LOGGING", type=bool, default=True, help="Flag to enable or disable W&B logging.")
     parser.add_argument("--wandb_project_name", type=str, default="VAETO_DEBUG", help="W&B project name.")
-    parser.add_argument("--output_dir", type=str, default='./out/debug', help="Path to save .pth files.")
+    parser.add_argument("--output_dir", type=str, default='./out/debug_sprial_filter_converting_func_by_psi', help="Path to save .pth files.")
 
     return parser
 
