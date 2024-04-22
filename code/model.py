@@ -40,10 +40,11 @@ class VAE(nn.Module):
     
     def update_linear_weights_according_to_psi(self, psi_filtered_indices):
         if psi_filtered_indices is not None:
-            complete_mask = torch.zeros(self.psi_M, dtype=torch.bool)
+            original_weights = self.convert_mu_nbrs.weight.detach().clone()
+            M = original_weights.shape[1]//self.latent_dim
+            complete_mask = torch.zeros(M, dtype=torch.bool)
             complete_mask[psi_filtered_indices] = True
             expanded_mask = complete_mask.repeat_interleave(repeats=self.latent_dim)
-            original_weights = self.convert_mu_nbrs.weight.detach().clone()
             new_weights = original_weights[:, expanded_mask]
             self.convert_mu_nbrs.weight = nn.Parameter(new_weights)
         else:
