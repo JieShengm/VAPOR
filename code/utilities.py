@@ -25,10 +25,6 @@ class Dataset(Dataset):
         return self.data.shape[0]
 
     def __getitem__(self, idx):
-        # if self.file == 'csv':
-        #     sample = self.data[idx, :]
-        # elif self.file == 'h5ad':
-        #     sample = self.data[idx].toarray() #slow
         sample = self.data[idx, :]
         
         if self.transform:
