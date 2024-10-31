@@ -6,10 +6,12 @@ We introduce a method, VAPOR (variational autoencoder with transport operators),
 
 VAPOR is open source for general use to parameterize and infer developmental gene expression dynamics. It can be further extended for other single-cell and spatial omics such as chromatin accessibility to reveal developmental epigenomic dynamics.
 
+![fig1](https://github.com/JieShengm/VAPOR/blob/main/figures/fig1.png)
+
 # Usage
 
 To train a VAPOR model, use
 
 ```
-python code/main.py --data_path /PATH/TO/FILE
+python VAPOR/main.py --data_path /PATH/TO/FILE
 ```
