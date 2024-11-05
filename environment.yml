@@ -1,0 +1,19 @@
+name: VAPOR_env
+channels:
+  - defaults
+dependencies:
+  - conda
+  - python=3.9
+  - cudatoolkit=11.8
+  - nvidia/label/cuda-12.1.0::cuda
+  - scikit-learn
+  - pandas
+  - numpy
+  - pip
+  - pip:
+    - --extra-index-url https://download.pytorch.org/whl/cu121
+    - torch 
+    - torchvision
+    - torchaudio
+    - wandb
+    - anndata
