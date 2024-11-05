@@ -10,6 +10,20 @@ VAPOR is open source for general use to parameterize and infer developmental gen
 
 # Usage
 
+First, clone and navigate to the repository.
+
+```
+git clone https://github.com/JieShengm/VAPOR
+cd VAPOR
+```
+
+Create and activate VAPOR environment using python 3.9 with `conda`,
+
+```
+conda env create -f environment.yml
+conda activate VAPOR_env
+```
+
 To train a VAPOR model, use
 
 ```
