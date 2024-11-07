@@ -14,14 +14,14 @@ VAPOR is open source for general use to parameterize and infer developmental gen
 
 First, clone and navigate to the repository: 
 
-```{bash}
+```bash
 git clone https://github.com/JieShengm/VAPOR
 cd VAPOR
 ```
 
 Set up the Python environment (requires Python 3.9):
 
-```{bash}
+```bash
 conda env create -f environment.yml
 conda activate VAPOR_env
 ```
@@ -37,7 +37,7 @@ VAPOR takes .h5ad files as input. The AnnData object should contain:
 
 ### Basic Training
 
-```{bash}
+```bash
 python vapor/main.py --data_path /path/to/your.h5ad -output_dir ./out/
 ```
 
@@ -55,7 +55,7 @@ The trained model will be saved to `output_dir`.
 
 First, load trained model and construct VAPOR representation. Example of using trained model:
 
-```{python}
+```python
 from utilities import *
 
 # Paths
