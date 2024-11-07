@@ -26,7 +26,7 @@ conda activate VAPOR_env
 VAPOR trains on `.h5ad` files (AnnData format). Basic usage:
 
 ```
-python VAPOR/main.py --data_path /PATH/TO/FILE
+python vapor/main.py --data_path /PATH/TO/FILE
 ```
 
 Key hyperparameters:
