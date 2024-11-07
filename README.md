@@ -73,7 +73,7 @@ adata_list = construct_VAPOR_adata(
 adata_VAPOR, adata = adata_list
 ```
 
-Output format:
+Output `adata_VAPOR` format:
 
 ```
 AnnData object with n_obs × n_vars = 4096 × 2
