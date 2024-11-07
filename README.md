@@ -37,7 +37,7 @@ VAPOR takes .h5ad files as input. The AnnData object should contain:
 
 ### Basic Training
 
-```
+```{bash}
 python vapor/main.py --data_path /path/to/your.h5ad -output_dir ./out/
 ```
 
