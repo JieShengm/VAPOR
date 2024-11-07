@@ -12,33 +12,48 @@ VAPOR is open source for general use to parameterize and infer developmental gen
 
 ## Installation
 
-Clone and navigate to the repository. Create and activate VAPOR environment using python 3.9 with `conda`,
+First, clone and navigate to the repository: 
 
-```
+```{bash}
 git clone https://github.com/JieShengm/VAPOR
 cd VAPOR
+```
+
+Set up the Python environment (requires Python 3.9):
+
+```{bash}
 conda env create -f environment.yml
 conda activate VAPOR_env
 ```
 
 ## Training
 
-VAPOR trains on `.h5ad` files (AnnData format). Basic usage:
+### Data Preparation
+
+VAPOR takes .h5ad files as input. The AnnData object should contain:
+
+- `adata.X`: Normalized gene expression matrix
+- `adata.obs`: Metadata (optional, not used during model training)
+
+### Basic Training
 
 ```
-python vapor/main.py --data_path /PATH/TO/FILE
+python vapor/main.py --data_path /path/to/your.h5ad -output_dir ./out/
 ```
 
-Key hyperparameters:
+Important parameters:
 
- - --M: Number of psi matrices (default: 4)
  - --latent_dim: Dimensionality of latent space (default: 2)
+ - --M: Number of psi matrices (default: 4)
+   - Represents expected number of biological processes
+   - Can be set higher than expected; model will try to filter out negligible components
+   - Usually, `M` $\ll$ `latent_dim`$^2$
 
-Model outputs are saved to --output_dir (default: './out/').
+The trained model will be saved to `output_dir`.
 
-## Inference
+## Analysis
 
-Example of using trained model:
+First, load trained model and construct VAPOR representation. Example of using trained model:
 
 ```{python}
 from utilities import *
@@ -51,8 +66,11 @@ model_path = 'path/to/model.pth'
 adata_list = construct_VAPOR_adata(
     data_path,
     model_path,
+    latent_dim=2,  # Must match training
+    psi_M=4,       # Must match training
     **params
 )
+adata_VAPOR, adata = adata_list
 ```
 
 Output format:
@@ -63,5 +81,7 @@ AnnData object with n_obs × n_vars = 4096 × 2
     obsm: 'X_mu', 'X_z'
     layers: 'mu1_psi0', 'v_psi0'
 ```
-For downstream analysis examples, see [simulation_cyclic.ipynb](https://github.com/JieShengm/VAPOR/blob/main/demo/simulation-cyclic.ipynb).
+### Example Analysis
+
+For analysis examples, see [simulation_cyclic.ipynb](https://github.com/JieShengm/VAPOR/blob/main/demo/simulation-cyclic.ipynb).
 
