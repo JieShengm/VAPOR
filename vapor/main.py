@@ -40,9 +40,9 @@ def get_args_parser():
     parser.add_argument("--max_iterations", type=int, default=10000, help="Maximum number of iterations.")
 
     # Miscellaneous
-    parser.add_argument("--WANDB_LOGGING", type=bool, default=True, help="Flag to enable or disable W&B logging.")
+    parser.add_argument("--WANDB_LOGGING", type=bool, default=False, help="Flag to enable or disable W&B logging.")
     parser.add_argument("--wandb_project_name", type=str, default="VAETO_DEBUG", help="W&B project name.")
-    parser.add_argument("--output_dir", type=str, default='./out/debug_sprial_filter_converting_func_by_psi', help="Path to save .pth files.")
+    parser.add_argument("--output_dir", type=str, default='./out/', help="Path to save .pth files.")
 
     return parser
 
