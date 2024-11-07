@@ -10,22 +10,58 @@ VAPOR is open source for general use to parameterize and infer developmental gen
 
 # Usage
 
-First, clone and navigate to the repository.
+## Installation
+
+Clone and navigate to the repository. Create and activate VAPOR environment using python 3.9 with `conda`,
 
 ```
 git clone https://github.com/JieShengm/VAPOR
 cd VAPOR
-```
-
-Create and activate VAPOR environment using python 3.9 with `conda`,
-
-```
 conda env create -f environment.yml
 conda activate VAPOR_env
 ```
 
-To train a VAPOR model, use
+## Training
+
+VAPOR trains on `.h5ad` files (AnnData format). Basic usage:
 
 ```
 python VAPOR/main.py --data_path /PATH/TO/FILE
 ```
+
+Key hyperparameters:
+
+ - --M: Number of psi matrices (default: 4)
+ - --latent_dim: Dimensionality of latent space (default: 2)
+
+Model outputs are saved to --output_dir (default: './out/').
+
+## Inference
+
+Example of using trained model:
+
+```{python}
+from utilities import *
+
+# Paths
+data_path = 'path/to/data.h5ad'
+model_path = 'path/to/model.pth'
+
+# Model configuration
+adata_list = construct_VAPOR_adata(
+    data_path,
+    model_path,
+    **params
+)
+```
+
+Output format:
+
+```
+AnnData object with n_obs × n_vars = 4096 × 2
+    obs: 't'
+    obsm: 'X_mu', 'X_z'
+    layers: 'mu1_psi0', 'v_psi0'
+```
+For downstream analysis examples, see [simulation_cyclic.ipynb](https://github.com/JieShengm/VAPOR/blob/main/demo/simulation-cyclic.ipynb).
+
