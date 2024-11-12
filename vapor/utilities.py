@@ -117,7 +117,7 @@ def construct_VAPOR_adata(data_path,
         mu, _ = vae.Encode(X_tensor)
 
     # Construct pairs for the VAE model
-    pairs = construct_pairs(mu, 15, psi)
+    pairs = construct_pairs(mu, 30, psi)
 
     # Run the VAE forward pass
     with torch.no_grad():
@@ -133,14 +133,14 @@ def construct_VAPOR_adata(data_path,
 
     # Compute mu1 and velocity
     with torch.no_grad():
-        psi_exp = torch.matrix_exp(psi.permute(2, 0, 1))
-        mu1 = torch.einsum('mik, bk -> mbi', psi_exp, mu)
+        psi_exp = torch.matrix_exp(psi)
+        mu1 = torch.einsum('mij, bj -> mbi', psi_exp, mu)
         velocity = mu1 - mu
 
     # Move mu1 and velocity to CPU and store them in adata_VAPOR layers
     mu1_np = mu1.cpu().numpy()
     velocity_np = velocity.cpu().numpy()
-    for i in range(psi.shape[-1]):
+    for i in range(psi.shape[0]):
         mu1_key = f'mu1_psi{i}'
         v_key = f'v_psi{i}'
         adata_VAPOR.layers[mu1_key] = mu1_np[i]

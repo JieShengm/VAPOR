@@ -6,7 +6,7 @@ import datetime
 import os
 from tqdm import tqdm
 
-from .model import DirectSumVAE, WeightedSumVAE, GatedSumVAE, TransportOperator
+from .model import *
 from .train import train_vae, train_transport_operator
 from .utilities import get_dataloader, load_checkpoint
 
@@ -19,16 +19,16 @@ class VAPOR:
                  lr_vae = 1e-5,
                  batch_size = 512,
                  aggregation_type='direct_sum',
-                 warmup_epoch = 200,
-                 total_epochs = 1000,
+                 warmup_epoch = 100,
+                 total_epochs = 500,
                  checkpoint_freq = 50,
                  to_learning_freq = 25,
-                 zeta = 1e-5,
+                 zeta = 1e-4,
                  gamma = 1e-4,
                  lr_eta_E = 1e-5,
-                 lr_eta_M = 1e-6,
+                 lr_eta_M = 1e-5,
                  M = 4,
-                 max_iterations = 10000,
+                 max_iterations = 5000,
                  WANDB_LOGGING = False,
                  wandb_project_name = "VAPOR_DEBUG",
                  output_dir = './out/',
@@ -170,6 +170,12 @@ class VAPOR:
         for epoch in range(start_epoch, self.config['total_epochs']):
             # VAE PART
             train_vaeto = epoch >= warmup_epoch
+            
+            print(f"\nEpoch {epoch} - Before VAE training:")
+            print(f"Current TO psi shape: {self.transport_operator.psi.shape}")
+            if hasattr(self.transport_operator, 'filtered_indices'):
+                print(f"TO filtered_indices: {self.transport_operator.filtered_indices}")
+        
             train_loss, total_bce, total_kld = train_vae(
                 self.train_loader, 
                 self.vae, 

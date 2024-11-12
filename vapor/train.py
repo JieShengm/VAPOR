@@ -35,7 +35,7 @@ def train_transport_operator(train_loader, vae, transport_operator, train_vaeto,
         print(f"mini batch{mini_batch}: M_step completed in {elapsed_time:.2f} seconds. (max_iterations = {max_iterations})")
         
         # Compute norms and losses
-        psi_norm_squared = torch.norm(psi, p='fro', dim=[0, 1])**2
+        psi_norm_squared = torch.norm(psi, p='fro', dim=[1, 2])**2
         for i in range(psi_norm_squared.size(0)):
             print(f"psi {i} norm: {psi_norm_squared[i].item():.12f}")
         
@@ -61,7 +61,6 @@ def train_vae(train_loader, vae, transport_operator, optimizer_vae, train_vaeto,
             # Train VAE with TO integration after warmup
             mu, _ = vae.Encode(data)
             pairs = construct_pairs(mu.detach(), psi = transport_operator.psi.detach())
-            # recon, _, mu_ast, logvar = vae(data, mu_nbrs = pairs[1][1:], psi_filtered_indices=transport_operator.filtered_indices)
             recon, _, mu_ast, logvar = vae(
                 data, 
                 mu_nbrs=pairs[1][1:],  # neighbor encodings
