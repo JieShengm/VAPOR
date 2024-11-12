@@ -1,17 +1,17 @@
 import torch
-from model import construct_pairs, vae_to_loss
+from .model import construct_pairs, vae_to_loss
 import time
 
-def train_transport_operator(train_loader, vae, transport_operator, train_vaeto, device, args):
+def train_transport_operator(train_loader, vae, transport_operator, train_vaeto, device, config):
     total_energy, total_recon_loss, total_trans_op_loss, total_coef_loss = 0, 0, 0, 0
     
     print("--TO model--")
     if not train_vaeto:
-        max_iterations = max(10, args.max_iterations)
+        max_iterations = max(10, config['max_iterations'])
         # to_learning_n_minibatch = float('inf')
         # print('--TO model--: VAE init phase')
     else:
-        max_iterations = max(10, args.max_iterations)
+        max_iterations = max(10, config['max_iterations'])
         # to_learning_n_minibatch = args.to_learning_n_minibatch
         # print('--TO model--: VAE+TO phase')
 
@@ -46,7 +46,7 @@ def train_transport_operator(train_loader, vae, transport_operator, train_vaeto,
         total_coef_loss += coef_loss
     return total_energy, total_recon_loss, total_trans_op_loss, total_coef_loss
 
-def train_vae(train_loader, vae, transport_operator, optimizer_vae, train_vaeto, device, args):
+def train_vae(train_loader, vae, transport_operator, optimizer_vae, train_vaeto, device, config):
     train_loss, total_bce, total_kld = 0, 0, 0
             
     for _, data in enumerate(train_loader):
@@ -61,7 +61,13 @@ def train_vae(train_loader, vae, transport_operator, optimizer_vae, train_vaeto,
             # Train VAE with TO integration after warmup
             mu, _ = vae.Encode(data)
             pairs = construct_pairs(mu.detach(), psi = transport_operator.psi.detach())
-            recon, _, mu_ast, logvar = vae(data, mu_nbrs = pairs[1][1:], psi_filtered_indices=transport_operator.filtered_indices)
+            # recon, _, mu_ast, logvar = vae(data, mu_nbrs = pairs[1][1:], psi_filtered_indices=transport_operator.filtered_indices)
+            recon, _, mu_ast, logvar = vae(
+                data, 
+                mu_nbrs=pairs[1][1:],  # neighbor encodings
+                psi=transport_operator.psi,  # current psi
+                psi_filtered_indices=transport_operator.filtered_indices  # filtered indices
+            )
             BCE, KLD = vae_to_loss(data, recon, mu_ast, logvar)
             loss = BCE + KLD
 

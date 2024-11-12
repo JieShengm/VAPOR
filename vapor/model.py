@@ -12,7 +12,7 @@ class VAE(nn.Module):
                  latent_dim, 
                  psi_M,
                  encoder_dims=[512, 256], 
-                 decoder_dims=[256, 512]):
+                 decoder_dims=[256, 512],):
         
         super(VAE, self).__init__()
         self.latent_dim = latent_dim
@@ -25,30 +25,43 @@ class VAE(nn.Module):
         
         self.fc_mu = nn.Linear(encoder_dims[-1], latent_dim)
         self.fc_logvar = nn.Linear(encoder_dims[-1], latent_dim)
-        self.convert_mu_nbrs = nn.Linear(self.latent_dim*self.psi_M, latent_dim, bias=False)
+        # self.convert_mu_nbrs = nn.Linear(self.latent_dim*self.psi_M, latent_dim, bias=False)
         
         decoder_layers = []
         for in_dim, out_dim in zip([latent_dim] + decoder_dims[:-1], decoder_dims):
             decoder_layers.extend([nn.Linear(in_dim, out_dim), nn.ReLU()])
         decoder_layers.append(nn.Linear(decoder_dims[-1], input_dim))
         self.decoder = nn.Sequential(*decoder_layers)
+            
+        self.register_buffer('psi_mask', torch.ones(psi_M))
 
     def reparameterize(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
         return mu + eps * std
-    
-    def update_linear_weights_according_to_psi(self, psi_filtered_indices):
-        if psi_filtered_indices is not None:
-            original_weights = self.convert_mu_nbrs.weight.detach().clone()
-            M = original_weights.shape[1]//self.latent_dim
-            complete_mask = torch.zeros(M, dtype=torch.bool)
-            complete_mask[psi_filtered_indices] = True
-            expanded_mask = complete_mask.repeat_interleave(repeats=self.latent_dim)
-            new_weights = original_weights[:, expanded_mask]
-            self.convert_mu_nbrs.weight = nn.Parameter(new_weights)
+
+    def update_psi_mask(self, filtered_indices):
+        if filtered_indices is not None:
+            self.psi_M = len(filtered_indices)
+            self.psi_mask = torch.ones(self.psi_M, device=self.psi_mask.device)
+            self.gate_indices = filtered_indices  # Store indices for all variants
         else:
             print('No indices provided for filtering.')
+
+    def aggregate_neighbor_states(self, mu_nbrs, psi):
+        raise NotImplementedError("Implement in subclass")
+    
+    # def update_linear_weights_according_to_psi(self, psi_filtered_indices):
+    #     if psi_filtered_indices is not None:
+    #         original_weights = self.convert_mu_nbrs.weight.detach().clone()
+    #         M = original_weights.shape[1]//self.latent_dim
+    #         complete_mask = torch.zeros(M, dtype=torch.bool)
+    #         complete_mask[psi_filtered_indices] = True
+    #         expanded_mask = complete_mask.repeat_interleave(repeats=self.latent_dim)
+    #         new_weights = original_weights[:, expanded_mask]
+    #         self.convert_mu_nbrs.weight = nn.Parameter(new_weights)
+    #     else:
+    #         print('No indices provided for filtering.')
 
     def Encode(self, x):
         x = self.encoder(x)
@@ -59,19 +72,80 @@ class VAE(nn.Module):
     def Decode(self, z):
         return self.decoder(z)
 
-    def forward(self, x, mu_nbrs=None,psi_filtered_indices=None):
+    def forward(self, x, mu_nbrs=None, psi=None, psi_filtered_indices=None):
         mu, logvar = self.Encode(x)
-        if mu_nbrs is not None:
-            m, batch_size, latent_dim = mu_nbrs.shape
-            mu_nbrs = mu_nbrs.permute(1, 0, 2).reshape(batch_size, latent_dim * m)
+        
+        if mu_nbrs is not None and psi is not None:
+            # Update psi_mask to match new psi size
             if psi_filtered_indices is not None:
-                self.update_linear_weights_according_to_psi(psi_filtered_indices)
-            mu_ast = self.convert_mu_nbrs(mu_nbrs)
+                self.update_psi_mask(psi_filtered_indices)
+                # Slice mu_nbrs to match new size
+                mu_nbrs = mu_nbrs[:len(psi_filtered_indices)]
+            
+            mu_ast = self.aggregate_neighbor_states(mu_nbrs, psi)
         else:
             mu_ast = mu
+            
         z = self.reparameterize(mu_ast, logvar)
         reconstructed = self.Decode(z)
         return reconstructed, z, mu_ast, logvar  
+
+class DirectSumVAE(VAE):
+    def __init__(self, input_dim, latent_dim, psi_M, **kwargs):
+        super().__init__(input_dim, latent_dim, psi_M, **kwargs)
+        # No additional parameters needed for direct sum
+
+    def aggregate_neighbor_states(self, mu_nbrs, psi):
+        """Simple summation over transformed states"""
+        masked_psi = psi * self.psi_mask.view(1, 1, -1)
+        transformed = torch.einsum('ijk,bkm->bij', masked_psi, mu_nbrs.permute(1, 0, 2))
+        return torch.sum(transformed, dim=1)
+
+class WeightedSumVAE(VAE):
+    def __init__(self, input_dim, latent_dim, psi_M, **kwargs):
+        super().__init__(input_dim, latent_dim, psi_M, **kwargs)
+        self.aggregation_weights = nn.Parameter(torch.ones(psi_M))
+        self.temperature = nn.Parameter(torch.tensor(1.0))
+
+    def aggregate_neighbor_states(self, mu_nbrs, psi):
+        """Weighted summation with learnable weights"""
+        masked_psi = psi * self.psi_mask.view(1, 1, -1)
+        transformed = torch.einsum('ijk,bkm->bij', masked_psi, mu_nbrs.permute(1, 0, 2))
+        
+        # Resize weights if needed
+        if self.aggregation_weights.size(0) != psi.shape[2]:
+            new_weights = nn.Parameter(torch.ones(psi.shape[2], device=self.aggregation_weights.device))
+            self.aggregation_weights = new_weights
+            
+        weights = F.softmax(self.aggregation_weights / self.temperature, dim=0)
+        return torch.sum(transformed * weights.view(1, -1, 1), dim=1)
+
+class GatedSumVAE(VAE):
+    def __init__(self, input_dim, latent_dim, psi_M, **kwargs):
+        super().__init__(input_dim, latent_dim, psi_M, **kwargs)
+        self.gate_network = nn.Sequential(
+            nn.Linear(latent_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, psi_M),
+            nn.Sigmoid()
+        )
+
+    def aggregate_neighbor_states(self, mu_nbrs, psi):
+        """Dynamic gating based on input states"""
+        masked_psi = psi * self.psi_mask.view(1, 1, -1)
+        transformed = torch.einsum('ijk,bkm->bij', masked_psi, mu_nbrs.permute(1, 0, 2))
+        
+        # Compute gates and resize if needed
+        full_gates = self.gate_network(mu_nbrs.mean(dim=0))
+        if full_gates.size(1) != psi.shape[2]:
+            # Recreate gate network with new size
+            self.gate_network[-1] = nn.Linear(64, psi.shape[2], device=full_gates.device)
+            full_gates = self.gate_network(mu_nbrs.mean(dim=0))
+            
+        # Normalize gates
+        gates = F.normalize(full_gates, p=1, dim=1)
+        return torch.sum(transformed * gates.unsqueeze(-1), dim=1)
+
 
 class TransportOperator(nn.Module):
     def __init__(self, 

@@ -3,10 +3,9 @@ from torch.utils.data import Dataset, DataLoader
 import torch
 import pandas as pd
 import numpy as np
-# import scanpy as sc
 import anndata as ad
 from scipy.sparse import issparse
-from model import VAE, construct_pairs
+from .model import VAE, construct_pairs
 # from utilities import load_checkpoint
 
 class Dataset(Dataset):
@@ -88,9 +87,13 @@ def load_model(model_path, input_dim, device=None,
 
     return vae, psi
 
-def construct_VAPOR_adata(data_path, model_path, device=None,
-                          latent_dim=2, encoder_dims=[256, 64, 8],
-                          decoder_dims=[8, 64, 256], psi_M=4):
+def construct_VAPOR_adata(data_path, 
+                          model_path, 
+                          device=None,
+                          latent_dim=3, 
+                          encoder_dims=[1024, 512, 256, 128],
+                          decoder_dims=[128, 256, 512, 1024],
+                          psi_M=4):
     """Construct adata_VAPOR using the data and the trained model."""
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -148,7 +151,7 @@ def construct_VAPOR_adata(data_path, model_path, device=None,
 import numpy as np
 from scipy.spatial.distance import pdist, squareform
 from scipy.stats import spearmanr
-import scanpy as sc
+
 def compute_transition_matrix(current_state, velocity, n_neighbors=30, eps=1e-5):
     n_cells = current_state.shape[0]
     
