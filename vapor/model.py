@@ -205,8 +205,6 @@ class TransportOperator(nn.Module):
                  M,
                  gamma,
                  zeta,
-                 beta,
-                 gamma_mi,
                  lr_eta_E,
                  lr_eta_M):
         super(TransportOperator, self).__init__() 
@@ -217,8 +215,6 @@ class TransportOperator(nn.Module):
         
         self.gamma = gamma
         self.zeta = zeta
-        self.beta = beta 
-        self.gamma_mi = gamma_mi
         self.lr_eta_E = lr_eta_E
         self.lr_eta_M = lr_eta_M 
         
