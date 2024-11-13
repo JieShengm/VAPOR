@@ -205,6 +205,8 @@ class TransportOperator(nn.Module):
                  M,
                  gamma,
                  zeta,
+                 beta,
+                 gamma_mi,
                  lr_eta_E,
                  lr_eta_M):
         super(TransportOperator, self).__init__() 
@@ -215,6 +217,8 @@ class TransportOperator(nn.Module):
         
         self.gamma = gamma
         self.zeta = zeta
+        self.beta = beta 
+        self.gamma_mi = gamma_mi
         self.lr_eta_E = lr_eta_E
         self.lr_eta_M = lr_eta_M 
         
@@ -268,7 +272,6 @@ class TransportOperator(nn.Module):
         trans_op_loss = (torch.norm(psi, p='fro',dim=[1,2])**2).sum()
         coef_loss = torch.abs(c).sum()
         
-
         energy = recon_loss + self.gamma * trans_op_loss + self.zeta * coef_loss
         if return_all:
             return energy, recon_loss, trans_op_loss, coef_loss
@@ -291,7 +294,7 @@ class TransportOperator(nn.Module):
             c = c[:,filtered_indices,:]
         return psi, c, filtered_indices
 
-def construct_pairs(x, n_neighbors=30, psi = None):
+def construct_pairs(x, n_neighbors=50, psi = None):
     # Compute nearest neighbors
     nbrs = NearestNeighbors(n_neighbors=n_neighbors+1, algorithm='ball_tree').fit(x.cpu().numpy())
     distances, indices = nbrs.kneighbors(x.cpu().numpy())
@@ -311,7 +314,7 @@ def construct_pairs(x, n_neighbors=30, psi = None):
     nbrs_indices = indices[:, 1:]
     direction_vectors = x[nbrs_indices] - x.unsqueeze(1)
     direction_vectors_normalized = normalize(direction_vectors, p=2, dim=-1) 
-    cos_sim = cos_sim = torch.einsum('ijk,mik->mij', direction_vectors_normalized, v_normalized)
+    cos_sim = torch.einsum('ijk,mik->mij', direction_vectors_normalized, v_normalized)
     epsilon = 1e-5
     cos_sim = (cos_sim - cos_sim.min(dim=2, keepdim=True)[0] + epsilon) / \
                 (cos_sim.max(dim=2, keepdim=True)[0] - cos_sim.min(dim=2, keepdim=True)[0] + epsilon)  
