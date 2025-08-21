@@ -6,10 +6,10 @@ Variational Autoencoder with transPort OpeRators disentangle co-occurring biolog
 
 1. Clone the repository
 
-```bash
-git clone https://github.com/JieShengm/VAPOR.git
-cd VAPOR
-```
+    ```bash
+    git clone https://github.com/JieShengm/VAPOR.git
+    cd VAPOR
+    ```
 
 2. (Recommended) Create a virtual environment
 
@@ -29,15 +29,15 @@ cd VAPOR
 
 3. Install dependencies
 
-```bash
-pip install -r requirements.txt
-```
+    ```bash
+    pip install -r requirements.txt
+    ```
 
 4. Install the package
 
-```bash
-pip install -e .
-```
+    ```bash
+    pip install -e .
+    ```
 
 ### Notes
 
@@ -53,7 +53,7 @@ For GPU acceleration, make sure you have a working CUDA setup and install the ap
 
 ### Command Line Training
 
-**Basic (unsupervised)**
+#### Basic (unsupervised)
 
 ```bash
 python main.py \
@@ -64,7 +64,17 @@ python main.py \
     --batch_size 512
 ```
 
-Guidelines for `root_indices` / `terminal_indices`
+#### Supervised
+
+```bash
+python main.py \
+    --adata_file your_data.h5ad \
+    --root_indices 0,1,2 \
+    --terminal_indices 100,101 \
+    --epochs 500
+```
+
+#### Guidelines for `root_indices` / `terminal_indices`
 
 Either `None`: runs in unsupervised mode (no supervision on trajectory start/end).
 
@@ -73,15 +83,6 @@ If provided, they can be:
 - Integer indices: row positions in adata (e.g., 0,1,2,3).
 
 - Cell names: values from adata.obs_names (e.g., cellA,cellB).
-
-**Supervised**
-
-```bash
-python main.py --adata_file data.h5ad \
-    --root_indices 0,1,2 \
-    --terminal_indices 100,101 \
-    --epochs 500
-```
 
 
 ### Notebook Usage
@@ -108,7 +109,7 @@ model = vapor.initialize_model(adata.n_vars, lr=5e-5)
 trained_model = vapor.train_model(model, dataset, epochs=500)
 ```
 
-#### Params config usage [[NEED TO UPDATE]]
+### Params config usage [[NEED TO UPDATE]]
 
 ```python
 # Using config object
