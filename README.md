@@ -107,3 +107,20 @@ model = vapor.initialize_model(adata.n_vars, lr=5e-5)
 # Train model
 trained_model = vapor.train_model(model, dataset, epochs=500)
 ```
+
+#### Params config usage [[NEED TO UPDATE]]
+
+```python
+# Using config object
+config = VAPORConfig(epochs=500, lr=5e-5)
+trained_model = train_model(model, dataset, config)
+
+# Using dict
+config_dict = {'epochs': 500, 'lr': 5e-5}
+trained_model = train_model(model, dataset, config_dict)
+
+# Using kwargs (most flexible)
+trained_model = train_model(model, dataset, epochs=500, lr=5e-5)
+```
+
+```
