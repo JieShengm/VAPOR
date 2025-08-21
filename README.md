@@ -13,19 +13,19 @@ cd VAPOR
 
 2. (Recommended) Create a virtual environment
 
-Using **conda**:
+    Using **conda**:
 
-```bash
-conda create -n vapor-env python=3.10 -y
-conda activate vapor-env
-```
+    ```bash
+    conda create -n vapor-env python=3.10 -y
+    conda activate vapor-env
+    ```
 
-Or using **venv**:
+    Or using **venv**:
 
-```bash
-python -m venv vapor-env
-source vapor-env/bin/activate   # Linux/Mac
-```
+    ```bash
+    python -m venv vapor-env
+    source vapor-env/bin/activate   # Linux/Mac
+    ```
 
 3. Install dependencies
 
@@ -121,6 +121,4 @@ trained_model = train_model(model, dataset, config_dict)
 
 # Using kwargs (most flexible)
 trained_model = train_model(model, dataset, epochs=500, lr=5e-5)
-```
-
 ```
