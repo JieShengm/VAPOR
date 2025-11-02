@@ -6,10 +6,13 @@ from torchdiffeq import odeint
 from .utils import init_vae_weights
 
 class TransportOperator(nn.Module):
-    def __init__(self, latent_dim: int, n_dynamics: int):
+    def __init__(self, latent_dim: int, n_dynamics: int, tau: float = 0.75,
+                 gate_mode: str = "sigmoid_norm"):  # 'softmax' | 'sigmoid_norm' | 'sigmoid'
         super().__init__()
         self.latent_dim = latent_dim
         self.n_dynamics = n_dynamics
+        self.gate_mode  = gate_mode
+        
         self.Psi = nn.ParameterList([
             nn.Parameter(torch.empty(latent_dim, latent_dim))
             for _ in range(n_dynamics)
@@ -19,32 +22,63 @@ class TransportOperator(nn.Module):
         self.gate_tokens = nn.Parameter(torch.randn(n_dynamics, latent_dim))
         nn.init.xavier_uniform_(self.gate_tokens)
 
-    def get_gates(self, z: torch.Tensor) -> torch.Tensor:
-        scores = torch.stack([z @ psi for psi in self.Psi], dim=1)
-        logits = torch.einsum('bmd,md->bm', scores, self.gate_tokens)
-        base = torch.sigmoid(logits)
-        return F.relu(2.0 * base - 1.0)
+        self.register_buffer("tau", torch.tensor(float(tau)))
+        self.eps = 1e-8
+
+        self.speed_head = nn.Sequential(
+            nn.Linear(latent_dim, max(32, latent_dim // 4)),
+            nn.LeakyReLU(),
+            nn.Linear(max(32, latent_dim // 4), 1),
+            nn.Softplus()
+        )
+
+    def unit_directions(self, z: torch.Tensor) -> torch.Tensor:
+        U = torch.stack([z @ psi for psi in self.Psi], dim=1)         # (B, M, d)
+        return U / (U.norm(dim=-1, keepdim=True).clamp_min(1e-6))     # (B, M, d)
+
+    def gate_logits(self, Uhat: torch.Tensor) -> torch.Tensor:
+        tok = F.normalize(self.gate_tokens, dim=-1, eps=1e-6)         # (M, d)
+        logits = torch.einsum('bmd,md->bm', Uhat, tok)                # (B, M)
+        return logits / self.tau.clamp_min(1e-6)
+
+    def get_mixture_weights(self, Uhat: torch.Tensor) -> torch.Tensor:
+        logits = self.gate_logits(Uhat)                               # (B, M)
+        mode = self.gate_mode.lower()
+        if mode == "softmax":
+            pi = torch.softmax(logits, dim=1)
+        elif mode == "sigmoid_norm":
+            a  = torch.sigmoid(logits)
+            pi = a / (a.sum(dim=1, keepdim=True) + self.eps)
+        elif mode == "sigmoid":
+            pi = torch.sigmoid(logits)
+        else:
+            raise ValueError(f"Unknown gate_mode: {self.gate_mode}")
+        return pi  
 
     def forward(self, t: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
-        gates = self.get_gates(z)
-        dz = torch.zeros_like(z)
-        for m, psi in enumerate(self.Psi):
-            dz += gates[:, m].unsqueeze(-1) * (z @ psi)
-        return dz
-    
+        Uhat = self.unit_directions(z)                                # (B, M, d)
+        pi   = self.get_mixture_weights(Uhat)                         # (B, M)
+        v_dir = torch.einsum('bm,bmd->bd', pi, Uhat)                  # (B, d)
+        speed = self.speed_head(z).squeeze(-1)                        # (B,)
+        return v_dir * speed.unsqueeze(-1)                            # (B, d)
+
+    @torch.no_grad()
+    def unit_velocity(self, z: torch.Tensor) -> torch.Tensor:
+        Uhat = self.unit_directions(z)
+        pi   = self.get_mixture_weights(Uhat)
+        v    = torch.einsum('bm,bmd->bd', pi, Uhat)
+        return F.normalize(v, dim=-1, eps=1e-6)
+
     def compute_velocities(self, z: torch.Tensor) -> torch.Tensor:
         return self.forward(torch.tensor(0.0, device=z.device), z)
-    
+
     def sort_and_prune_psi(self, prune_threshold: float = None, relative: bool = False) -> None:
-            # Compute norms
             norms = [psi.data.norm().item() for psi in self.Psi]
             max_norm = max(norms)
-            
-            # Sort by norms descending
+
             sorted_idxs = sorted(range(len(norms)), 
                                 key=lambda i: norms[i], reverse=True)
             
-            # Determine which channels to keep
             if prune_threshold is None:
                 # Just sort, keep all
                 keep = sorted_idxs
@@ -61,17 +95,14 @@ class TransportOperator(nn.Module):
                     keep = [sorted_idxs[j] for j, rms in enumerate(rms_norms) 
                            if rms >= prune_threshold]
             
-            # Always keep at least one channel (the largest)
             if not keep:
                 keep = [sorted_idxs[0]]
             
-            # Rebuild
             self.Psi = nn.ParameterList([self.Psi[i] for i in keep])
             new_tokens = self.gate_tokens[keep].clone().detach()
             self.gate_tokens = nn.Parameter(new_tokens)
             self.n_dynamics = len(keep)
             
-            # Print results
             if prune_threshold is None:
                 print(f"Sorted {self.n_dynamics} channels by norm")
             else:
@@ -132,13 +163,19 @@ class VAPOR(nn.Module):
 
     def encode(self, x: torch.Tensor):
         return self.vae(x)
-
+    
     def integrate(self, z0: torch.Tensor, t_span: torch.Tensor):
         z0_det = z0.detach()
-        return odeint(self.transport_op, z0_det, t_span, method='rk4')
+        # reset NFE counter (optional)
+        if hasattr(self.transport_op, "nfe"):
+            print("Resetting NFE counter to zero.")
+            self.transport_op.nfe.zero_()
+        return odeint(self.transport_op, z0_det, t_span, 
+                      method='rk4') 
+                      # method='dopri5', rtol=1e-4, atol=1e-5)
 
-    def compute_velocities(self, z: torch.Tensor) -> torch.Tensor:
-        return self.transport_op(torch.tensor(0.0, device=z.device), z)
+    def compute_velocities(self, z: torch.Tensor,) -> torch.Tensor:
+        return self.transport_op.compute_velocities(z)
 
     def build_radius_graph(self, z: torch.Tensor, eps: float, min_samples: int = 2, k: int = None):
         B = z.size(0)
@@ -203,7 +240,6 @@ class VAPOR(nn.Module):
             nxt = nbrs[torch.arange(B, device=z.device), best]
             paths[:, t] = nxt
             curr = nxt
-
         return paths
 
     def directed_graph_tcl_loss(self, z0: torch.Tensor, z_traj: torch.Tensor,
@@ -229,4 +265,3 @@ class VAPOR(nn.Module):
         if is_term.any():
             losses.append(F.relu(projs[is_term]).mean())
         return torch.stack(losses).mean() if losses else torch.tensor(0.0, device=z0.device)
-

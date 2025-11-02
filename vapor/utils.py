@@ -43,9 +43,11 @@ def initialize_model(
         decoder_dims=config.decoder_dims
     )
     
+    print(config.tau)
     transport_op = TransportOperator(
         latent_dim=config.latent_dim,
-        n_dynamics=config.n_dynamics
+        n_dynamics=config.n_dynamics,
+        tau=config.tau
     )
     
     model = VAPOR(vae=vae, transport_op=transport_op)

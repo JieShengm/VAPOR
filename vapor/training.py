@@ -14,210 +14,51 @@ import matplotlib.pyplot as plt
 
 from .config import VAPORConfig
 
-def psi_mutual_independence_loss(Psi_list, alpha=1.0, beta=1.0):
-    """Compute mutual independence loss for Psi matrices."""
-    n = len(Psi_list)
-    loss_size = 0.0
-    for psi in Psi_list:
-        loss_size += torch.norm(psi, p='fro')**2
-    loss_size = loss_size / n
+def psi_structure_loss(
+    Psi_list,
+    w_scale: float = 1.0,
+    w_orth: float = 1.0,
+    spec_cap: float = None,
+    eps: float = 1e-8
+):
     
-    loss_inter = 0.0
-    num_pairs = n * (n - 1) / 2
-    for i in range(n):
-        for j in range(i+1, n):
-            inter = Psi_list[i].T @ Psi_list[j]
-            loss_inter += torch.norm(inter, p='fro')**2
-    loss_inter = loss_inter / num_pairs
-    return alpha * loss_size + beta * loss_inter
+    if isinstance(Psi_list, (list, tuple)):
+        Psi = torch.stack(list(Psi_list), dim=0)
+    else:
+        Psi = torch.stack(list(Psi_list), dim=0)
+    M, d, _ = Psi.shape
 
-class MinimalFlowSupervision:
-    """Minimal flow supervision for optional start/terminal markers."""
-    
-    def __init__(self, device='cuda'):
-        self.device = device
-    
-    def start_activity_loss(self, v_start: torch.Tensor, target_speed: float = 0.15) -> torch.Tensor:
-        """Start points should have moderate speed."""
-        if v_start.size(0) == 0:
-            return torch.tensor(0.0, device=self.device)
-        
-        start_speeds = torch.norm(v_start, dim=1)
-        speed_loss = F.mse_loss(start_speeds, 
-                               torch.full_like(start_speeds, target_speed))
-        return speed_loss
-    
-    def terminal_stability_loss(self, v_term: torch.Tensor) -> torch.Tensor:
-        """Terminal points should have low velocity."""
-        if v_term.size(0) == 0:
-            return torch.tensor(0.0, device=self.device)
-        
-        stability_loss = torch.norm(v_term, dim=1).mean()
-        return stability_loss
-    
-    def weak_influence_loss(self, z: torch.Tensor, v: torch.Tensor,
-                           is_start: torch.BoolTensor, is_term: torch.BoolTensor,
-                           influence_radius: float = None) -> torch.Tensor:
-        """Weak repulsion-attraction loss for directional guidance."""
-        if not (is_start.any() or is_term.any()):
-            return torch.tensor(0.0, device=self.device)
-        
-        if influence_radius is None:
-            all_dists = torch.cdist(z, z)
-            influence_radius = torch.median(all_dists[all_dists > 0]).item()
-        
-        loss = 0.0
-        count = 0
-        
-        for i in range(z.size(0)):
-            if is_start[i] or is_term[i]:
-                continue
-            
-            current_pos = z[i]
-            current_vel = v[i]
-            
-            if torch.norm(current_vel) <= 1e-6:
-                continue
-            
-            vel_direction = F.normalize(current_vel, dim=0)
-            
-            # Start repulsion
-            if is_start.any():
-                start_positions = z[is_start]
-                dist_to_starts = torch.norm(start_positions - current_pos.unsqueeze(0), dim=1)
-                min_start_dist, closest_start_idx = torch.min(dist_to_starts, dim=0)
-                
-                if min_start_dist < influence_radius:
-                    closest_start = start_positions[closest_start_idx]
-                    repulsion_direction = F.normalize(current_pos - closest_start, dim=0)
-                    similarity = torch.dot(repulsion_direction, vel_direction)
-                    weight = 1.0 - (min_start_dist / influence_radius)
-                    loss += F.relu(0.1 - similarity) * weight * 0.5
-                    count += 1
-            
-            # Terminal attraction
-            if is_term.any():
-                term_positions = z[is_term]
-                dist_to_terms = torch.norm(term_positions - current_pos.unsqueeze(0), dim=1)
-                min_term_dist, closest_term_idx = torch.min(dist_to_terms, dim=0)
-                
-                if min_term_dist < influence_radius:
-                    closest_term = term_positions[closest_term_idx]
-                    attraction_direction = F.normalize(closest_term - current_pos, dim=0)
-                    similarity = torch.dot(attraction_direction, vel_direction)
-                    weight = 1.0 - (min_term_dist / influence_radius)
-                    loss += F.relu(0.1 - similarity) * weight * 0.5
-                    count += 1
-        
-        return loss / count if count > 0 else torch.tensor(0.0, device=self.device)
-    
-    def trajectory_progression_loss(self, z_traj: torch.Tensor, 
-                                  is_start: torch.BoolTensor, is_term: torch.BoolTensor) -> torch.Tensor:
-        """Start trajectories should show progression."""
-        if not is_start.any() or z_traj.size(0) < 2:
-            return torch.tensor(0.0, device=self.device)
-        
-        z_initial = z_traj[0]
-        z_final = z_traj[-1]
-        
-        start_initial = z_initial[is_start]
-        start_final = z_final[is_start]
-        
-        if start_initial.size(0) == 0:
-            return torch.tensor(0.0, device=self.device)
-        
-        loss = 0.0
-        
-        # Start points should have displacement
-        displacements = torch.norm(start_final - start_initial, dim=1)
-        min_displacement = 0.05
-        stagnation_loss = F.relu(min_displacement - displacements).mean()
-        loss += stagnation_loss
-        
-        # Progress toward terminals if available
-        if is_term.any():
-            term_positions = z_initial[is_term]
-            
-            progress_loss = 0.0
-            for i in range(start_initial.size(0)):
-                initial_dists = torch.norm(start_initial[i].unsqueeze(0) - term_positions, dim=1)
-                final_dists = torch.norm(start_final[i].unsqueeze(0) - term_positions, dim=1)
-                
-                best_progress = torch.max(initial_dists - final_dists)
-                progress_loss += F.relu(-best_progress)
-            
-            loss += progress_loss / start_initial.size(0) * 0.5
-        
-        return loss
-    
-    def compute_supervision_loss(self, model, z0: torch.Tensor, z_traj: torch.Tensor,
-                               is_start: torch.BoolTensor = None, is_term: torch.BoolTensor = None,
-                               weights: dict = None) -> tuple:
-        """Compute minimal supervision loss."""
-        if weights is None:
-            weights = {
-                'start_activity': 0.1,
-                'terminal_stability': 0.1,
-                'weak_influence': 0.3,
-                'trajectory_progress': 0.5,
-            }
-        
-        v0 = model.compute_velocities(z0)
-        loss_components = {}
-        total_loss = torch.tensor(0.0, device=self.device)
-        
-        has_start = is_start is not None and is_start.any()
-        has_term = is_term is not None and is_term.any()
-        
-        if not (has_start or has_term):
-            # No supervision signals
-            loss_components = {
-                'start_activity': torch.tensor(0.0, device=self.device),
-                'terminal_stability': torch.tensor(0.0, device=self.device),
-                'weak_influence': torch.tensor(0.0, device=self.device),
-                'trajectory_progress': torch.tensor(0.0, device=self.device)
-            }
-            return total_loss, loss_components
-        
-        # Start activity loss
-        if has_start:
-            start_loss = self.start_activity_loss(v0[is_start])
-            loss_components['start_activity'] = start_loss
-            total_loss += weights.get('start_activity', 1.0) * start_loss
-        else:
-            loss_components['start_activity'] = torch.tensor(0.0, device=self.device)
-        
-        # Terminal stability loss
-        if has_term:
-            term_loss = self.terminal_stability_loss(v0[is_term])
-            loss_components['terminal_stability'] = term_loss
-            total_loss += weights.get('terminal_stability', 1.0) * term_loss
-        else:
-            loss_components['terminal_stability'] = torch.tensor(0.0, device=self.device)
-        
-        # Weak influence loss
-        if has_start or has_term:
-            start_mask = is_start if has_start else torch.zeros(z0.size(0), dtype=torch.bool, device=self.device)
-            term_mask = is_term if has_term else torch.zeros(z0.size(0), dtype=torch.bool, device=self.device)
-            
-            influence_loss = self.weak_influence_loss(z0, v0, start_mask, term_mask)
-            loss_components['weak_influence'] = influence_loss
-            total_loss += weights.get('weak_influence', 0.5) * influence_loss
-        else:
-            loss_components['weak_influence'] = torch.tensor(0.0, device=self.device)
-        
-        # Trajectory progression loss
-        if has_start:
-            start_mask = is_start if has_start else torch.zeros(z0.size(0), dtype=torch.bool, device=self.device)
-            term_mask = is_term if has_term else torch.zeros(z0.size(0), dtype=torch.bool, device=self.device)
-            
-            progress_loss = self.trajectory_progression_loss(z_traj, start_mask, term_mask)
-            loss_components['trajectory_progress'] = progress_loss
-            total_loss += weights.get('trajectory_progress', 0.8) * progress_loss
-        else:
-            loss_components['trajectory_progress'] = torch.tensor(0.0, device=self.device)
-        
-        return total_loss, loss_components
+    fro2 = (Psi ** 2).sum(dim=(1, 2))                      # (M,)
+    scale_loss = ((fro2 / d - 1.0) ** 2).mean()
+
+    fro = fro2.sqrt().clamp_min(eps).view(M, 1, 1)
+    Psi_hat = Psi / fro                                     # (M,d,d)
+    # G_ij = <Psi_i, Psi_j> = tr(Psi_i^T Psi_j)
+    G = torch.einsum('mij,nij->mn', Psi_hat, Psi_hat)       # (M,M)
+    orth_loss = (G - torch.eye(M, device=Psi.device)).pow(2).sum() / (M*M - M + eps)
+
+    spec_loss = Psi.new_tensor(0.0)
+    if spec_cap is not None:
+        iters = 5
+        v = torch.randn(M, d, 1, device=Psi.device)
+        v = v / (v.norm(dim=1, keepdim=True) + eps)
+        for _ in range(iters):
+            v = Psi.transpose(1, 2) @ (Psi @ v)
+            v = v / (v.norm(dim=1, keepdim=True) + eps)
+        s_max = (Psi @ v).norm(dim=1).squeeze(-1)           # (M,)
+        spec_violation = (s_max - spec_cap).clamp_min(0.0)
+        spec_loss = (spec_violation ** 2).mean()
+
+    total = (w_scale * scale_loss +
+             w_orth  * orth_loss  +
+             spec_loss)
+
+    return total, {
+        'scale': scale_loss.detach(),
+        'orth':  orth_loss.detach(),
+        'spec':  spec_loss.detach(),
+        'fro2_mean': fro2.mean().detach(),
+    }
 
 @torch.no_grad()
 def _evaluate_vae_on_loader(model, loader, device="cuda"):
@@ -417,8 +258,16 @@ def train_model(
             traj_loss, paths, adj_idx, adj_mask = model.directed_graph_tcl_loss(z0_detached, z_traj, eps)
 
             v0 = model.compute_velocities(z0_detached)
-            prior_loss = model.flag_direction_loss_graph(z0_detached, v0, is_root, is_term, adj_idx, adj_mask)
-            psi_loss   = psi_mutual_independence_loss(model.transport_op.Psi, alpha=config.eta_a, beta=1.0-config.eta_a)
+            prior_loss = model.flag_direction_loss_graph(z0_detached, v0,
+                                                        is_root, is_term,
+                                                        adj_idx, adj_mask)
+            # psi_loss   = psi_mutual_independence_loss(model.transport_op.Psi, alpha=config.eta_a, beta=1.0-config.eta_a)
+            psi_loss, _ = psi_structure_loss(
+                model.transport_op.Psi,
+                w_scale = 1.0, #config.psi_w_scale,     # 0.1~1.0
+                w_orth  = config.eta_a, #config.psi_w_orth,      # 0.1~1.0
+                spec_cap= 0.0 #config.psi_spec_cap
+                )
 
             to_loss = (config.alpha * traj_loss + config.gamma * prior_loss + config.eta * psi_loss)
 
@@ -472,6 +321,13 @@ def train_model(
 
     print("-" * 80)
     print("Training completed!")
+    _plot_training_metrics({
+                'mse_losses': history['train_mse'],
+                'kld_losses': history['train_kld'],
+                'traj_losses': history['train_traj'],
+                'prior_losses': history['train_prior'],
+                'psi_losses': history['train_psi'],
+            })
 
     if split_train_test:
         if save_dir is None:
@@ -528,15 +384,6 @@ def _plot_training_metrics(metrics: Dict[str, List[float]], has_supervision: boo
     axes[2].set_title('Total Losses')
     axes[2].legend()
     axes[2].grid(True, alpha=0.3)
-    
-    # Supervision losses (only if supervision is used)
-    if has_supervision and 'supervision_losses' in metrics:
-        axes[3].plot(epochs, metrics['supervision_losses'], label='Supervision', color='purple')
-        axes[3].set_xlabel('Epoch')
-        axes[3].set_ylabel('Loss')
-        axes[3].set_title('Supervision Loss')
-        axes[3].legend()
-        axes[3].grid(True, alpha=0.3)
     
     plt.tight_layout()
     plt.show()

@@ -23,25 +23,24 @@ class VAPORConfig:
     decoder_dims: List[int] = None
     
     # Training
-    epochs: int = 350
+    epochs: int = 500
     batch_size: int = 512
-    lr: float = 1e-4
+    lr: float = 5e-5
     vae_lr_factor: float = 0.05
     device: Optional[str] = None
     
     # Loss weights
-    beta: float = 0.1         # KL weight
+    beta: float = 0.02         # KL weight
     alpha: float = 1.0        # Trajectory weight  
     gamma: float = 1.0        # Prior weight
     eta: float = 1.0          # Psi weight
     eta_a: float = 0.5          # Psi weight
-    supervision_weight: float = 0.3
+    tau: float = 0.75
     
     # Training options
-    t_max: int = 3
+    t_max: int = 5
     prune: bool = False
     grad_clip: float = 1.0
-    supervision_strength: str = 'light'
     print_freq: int = 1
     plot_losses: bool = True
     
@@ -89,25 +88,24 @@ def parse_args():
     parser.add_argument('--decoder_dims', type=str, default="128,512,2048")
     
     # Training
-    parser.add_argument('--epochs', type=int, default=350)
+    parser.add_argument('--epochs', type=int, default=500)
     parser.add_argument('--batch_size', type=int, default=512)
-    parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--lr', type=float, default=5e-5)
     parser.add_argument('--vae_lr_factor', type=float, default=0.05)
     parser.add_argument('--device', type=str, default=None)
     
     # Loss weights
-    parser.add_argument('--beta', type=float, default=0.1)
+    parser.add_argument('--beta', type=float, default=0.02)
     parser.add_argument('--alpha', type=float, default=1.0)
     parser.add_argument('--gamma', type=float, default=1.0)
     parser.add_argument('--eta', type=float, default=1.0)
     parser.add_argument('--eta_a', type=float, default=0.5)
-    parser.add_argument('--supervision_weight', type=float, default=0.3)
+    parser.add_argument('--tau', type=float, default=0.75)
     
     # Options
-    parser.add_argument('--t_max', type=int, default=3)
+    parser.add_argument('--t_max', type=int, default=5)
     parser.add_argument('--prune', action='store_true')
     parser.add_argument('--grad_clip', type=float, default=1.0)
-    parser.add_argument('--supervision_strength', type=str, default='light')
     
     args = parser.parse_args()
     
