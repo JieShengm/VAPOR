@@ -52,3 +52,21 @@ def initialize_model(
     
     model = VAPOR(vae=vae, transport_op=transport_op)
     return model
+
+import torch
+from pathlib import Path
+
+def save_checkpoint(model, config, path: str, extra: dict | None = None):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "model_state_dict": model.state_dict(),
+        "config": vars(config) if config is not None else None,
+        "extra": extra or {},
+    }
+    torch.save(payload, path)
+
+def load_checkpoint(model, path: str, map_location="cpu"):
+    ckpt = torch.load(path, map_location=map_location)
+    model.load_state_dict(ckpt["model_state_dict"])
+    return model, ckpt

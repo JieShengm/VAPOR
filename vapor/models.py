@@ -18,7 +18,8 @@ class TransportOperator(nn.Module):
             for _ in range(n_dynamics)
         ])
         for psi in self.Psi:
-            nn.init.orthogonal_(psi, gain=1e-3)
+            # nn.init.orthogonal_(psi, gain=1e-3)
+            nn.init.orthogonal_(psi, gain=1.0)
         self.gate_tokens = nn.Parameter(torch.randn(n_dynamics, latent_dim))
         nn.init.xavier_uniform_(self.gate_tokens)
 
@@ -48,9 +49,9 @@ class TransportOperator(nn.Module):
             pi = torch.softmax(logits, dim=1)
         elif mode == "sigmoid_norm":
             a  = torch.sigmoid(logits)
-            pi = a / (a.sum(dim=1, keepdim=True) + self.eps)
+            pi = a / (a.sum(dim=1, keepdim=True) + self.eps)         
         elif mode == "sigmoid":
-            pi = torch.sigmoid(logits)
+            pi = torch.sigmoid(logits) 
         else:
             raise ValueError(f"Unknown gate_mode: {self.gate_mode}")
         return pi  
@@ -58,7 +59,7 @@ class TransportOperator(nn.Module):
     def forward(self, t: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
         Uhat = self.unit_directions(z)                                # (B, M, d)
         pi   = self.get_mixture_weights(Uhat)                         # (B, M)
-        v_dir = torch.einsum('bm,bmd->bd', pi, Uhat)                  # (B, d)
+        v_dir = torch.einsum('bm,bmd->bd', pi, Uhat)                  # (B, d) 
         speed = self.speed_head(z).squeeze(-1)                        # (B,)
         return v_dir * speed.unsqueeze(-1)                            # (B, d)
 
@@ -73,12 +74,15 @@ class TransportOperator(nn.Module):
         return self.forward(torch.tensor(0.0, device=z.device), z)
 
     def sort_and_prune_psi(self, prune_threshold: float = None, relative: bool = False) -> None:
+            # Compute norms
             norms = [psi.data.norm().item() for psi in self.Psi]
             max_norm = max(norms)
-
-            sorted_idxs = sorted(range(len(norms)), 
-                                key=lambda i: norms[i], reverse=True)
             
+            # Sort by norms descending
+            sorted_idxs = sorted(range(len(norms)), 
+                                key=lambda i: norms[i], reverse=False)
+            
+            # Determine which channels to keep
             if prune_threshold is None:
                 # Just sort, keep all
                 keep = sorted_idxs
@@ -95,14 +99,17 @@ class TransportOperator(nn.Module):
                     keep = [sorted_idxs[j] for j, rms in enumerate(rms_norms) 
                            if rms >= prune_threshold]
             
+            # Always keep at least one channel (the largest)
             if not keep:
                 keep = [sorted_idxs[0]]
             
+            # Rebuild
             self.Psi = nn.ParameterList([self.Psi[i] for i in keep])
             new_tokens = self.gate_tokens[keep].clone().detach()
             self.gate_tokens = nn.Parameter(new_tokens)
             self.n_dynamics = len(keep)
             
+            # Print results
             if prune_threshold is None:
                 print(f"Sorted {self.n_dynamics} channels by norm")
             else:
@@ -137,6 +144,8 @@ class VAE(nn.Module):
         layers.append(nn.Linear(prev, input_dim))
         self.decoder = nn.Sequential(*layers)
         self.decoder.apply(init_vae_weights)
+        self.input_dim = input_dim
+        self.latent_dim = latent_dim
 
     def encode(self, x: torch.Tensor):
         h = self.encoder(x)
@@ -172,7 +181,7 @@ class VAPOR(nn.Module):
             self.transport_op.nfe.zero_()
         return odeint(self.transport_op, z0_det, t_span, 
                       method='rk4') 
-                      # method='dopri5', rtol=1e-4, atol=1e-5)
+                    #   method='dopri5', rtol=1e-4, atol=1e-5)
 
     def compute_velocities(self, z: torch.Tensor,) -> torch.Tensor:
         return self.transport_op.compute_velocities(z)

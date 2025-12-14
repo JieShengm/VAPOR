@@ -16,7 +16,7 @@ from .config import VAPORConfig
 
 def psi_structure_loss(
     Psi_list,
-    w_scale: float = 1.0,
+    w_scale: float = 0.2,
     w_orth: float = 1.0,
     spec_cap: float = None,
     eps: float = 1e-8
@@ -157,6 +157,7 @@ def train_model(
     eval_each_epoch: bool = True,          
     save_dir: Optional[Union[str, Path]] = None,  
     exp_name: str = "run",
+    verbose: bool = True,
     **kwargs
 ) -> 'VAPOR':
     
@@ -183,7 +184,9 @@ def train_model(
     # ---------- optimizer ----------
     vae_params = list(model.vae.parameters())
     other_params = [p for n, p in model.named_parameters() if not n.startswith("vae.")]
-    opt_vae = torch.optim.Adam(vae_params, lr=config.vae_lr_factor * config.lr)
+
+    vae_scale = model.vae.latent_dim / model.vae.input_dim
+    opt_vae = torch.optim.Adam(vae_params, lr= vae_scale * config.lr)
     opt_to  = torch.optim.Adam(other_params, lr=config.lr)
 
     # ---------- DataLoader ----------
@@ -264,8 +267,8 @@ def train_model(
             # psi_loss   = psi_mutual_independence_loss(model.transport_op.Psi, alpha=config.eta_a, beta=1.0-config.eta_a)
             psi_loss, _ = psi_structure_loss(
                 model.transport_op.Psi,
-                w_scale = 1.0, #config.psi_w_scale,     # 0.1~1.0
-                w_orth  = config.eta_a, #config.psi_w_orth,      # 0.1~1.0
+                w_scale = 0.2, #config.psi_w_scale,     # 0.1~1.0
+                w_orth  = config.eta, #config.psi_w_orth,      # 0.1~1.0
                 spec_cap= 0.0 #config.psi_spec_cap
                 )
 
@@ -294,19 +297,21 @@ def train_model(
         history["train_prior"].append(epoch_metrics['prior'])
         history["train_psi"].append(epoch_metrics['psi'])
 
-        if epoch % config.print_freq == 0:
-            print(f"Epoch {epoch:3d}/{config.epochs} | "
-                  f"Time: {epoch_time:5.2f}s | "
-                  f"Recon: {epoch_metrics['mse']:.4f} | "
-                  f"KL: {epoch_metrics['kld']:.4f} | "
-                  f"Traj: {epoch_metrics['traj']:.4f} | "
-                  f"Prior: {epoch_metrics['prior']:.4f} | "
-                  f"Psi: {epoch_metrics['psi']:.4f}")
+        if verbose:
+            if epoch % config.print_freq == 0:
+                print(f"Epoch {epoch:3d}/{config.epochs} | "
+                    f"Time: {epoch_time:5.2f}s | "
+                    f"Recon: {epoch_metrics['mse']:.4f} | "
+                    f"KL: {epoch_metrics['kld']:.4f} | "
+                    f"Traj: {epoch_metrics['traj']:.4f} | "
+                    f"Prior: {epoch_metrics['prior']:.4f} | "
+                    f"Psi: {epoch_metrics['psi']:.4f}")
 
         if epoch % max(1, config.epochs // 10) == 0:
             model.transport_op.sort_and_prune_psi()
             norms = [psi.pow(2).mean().sqrt().item() for psi in model.transport_op.Psi]
-            print(f"Psi norms: {[f'{n:.4f}' for n in norms]}")
+            if verbose:
+                print(f"Psi norms: {[f'{n:.4f}' for n in norms]}") 
 
         if split_train_test and eval_each_epoch:
             test_mse, test_kld = _evaluate_vae_on_loader(model, test_loader, device=config.device)

@@ -1,127 +1,156 @@
-import argparse
-import torch
-from dataclasses import dataclass
-from typing import Optional, List, Dict, Any
+from __future__ import annotations
 
+from dataclasses import dataclass, field, fields, MISSING
+from typing import Optional, List, Dict, Any, get_origin, get_args, Union
+import argparse
+
+
+# =========================
+# Config
+# =========================
 
 @dataclass
 class VAPORConfig:
-    """Simple VAPOR configuration."""
-    
+    """VAPOR configuration (single source of truth)."""
+
     # Data
-    adata_file: str = "./data/pasca_development_hvg5k_scaled.h5ad"
-    save_path: str = "./out/vapor.pth"
+    # adata_file: str = "./data/pasca_development_hvg5k_scaled.h5ad"
+    # save_path: str = "./out/vapor.pth"
     time_label: Optional[str] = None
-    root_indices: Optional[List] = None
-    terminal_indices: Optional[List] = None
+    root_indices: Optional[List[int]] = None
+    terminal_indices: Optional[List[int]] = None
     scale: bool = True
-    
+
     # Model
     latent_dim: int = 64
     n_dynamics: int = 10
-    encoder_dims: List[int] = None
-    decoder_dims: List[int] = None
-    
+    encoder_dims: List[int] = field(default_factory=lambda: [2048, 512, 128])
+    decoder_dims: List[int] = field(default_factory=lambda: [128, 512, 2048])
+
     # Training
     epochs: int = 500
     batch_size: int = 512
     lr: float = 5e-5
-    vae_lr_factor: float = 0.05
-    device: Optional[str] = None
-    
+    # vae_lr_factor: float = 0.05
+    device: Optional[str] = None  # resolved later in training
+
     # Loss weights
-    beta: float = 0.02         # KL weight
-    alpha: float = 1.0        # Trajectory weight  
-    gamma: float = 1.0        # Prior weight
-    eta: float = 1.0          # Psi weight
-    eta_a: float = 0.5          # Psi weight
+    beta: float = 0.02
+    alpha: float = 1.0
+    gamma: float = 1.0
+    eta: float = 1.0
+    # eta_a: float = 0.5
     tau: float = 0.75
-    
+
     # Training options
     t_max: int = 5
     prune: bool = False
     grad_clip: float = 1.0
     print_freq: int = 1
     plot_losses: bool = True
-    
-    def __post_init__(self):
-        # Set defaults
-        if self.device is None:
-            self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        
-        if self.encoder_dims is None:
-            self.encoder_dims = [2048, 512, 128]
-        
-        if self.decoder_dims is None:
-            self.decoder_dims = [128, 512, 2048]
-    
+
+    def update(self, **kwargs) -> None:
+        for k, v in kwargs.items():
+            if not hasattr(self, k):
+                raise ValueError(f"Unknown config field: {k}")
+            setattr(self, k, v)
+
     @classmethod
-    def from_dict(cls, config_dict: Dict[str, Any]):
-        """Create config from dictionary."""
-        # Only keep valid fields
-        valid_fields = {f.name for f in cls.__dataclass_fields__.values()}
-        filtered_dict = {k: v for k, v in config_dict.items() if k in valid_fields}
-        return cls(**filtered_dict)
-    
-    def update(self, **kwargs):
-        """Update config with new values."""
-        for key, value in kwargs.items():
-            if hasattr(self, key):
-                setattr(self, key, value)
-            else:
-                print(f"Warning: Unknown parameter '{key}' ignored")
+    def from_dict(cls, d: Dict[str, Any]) -> "VAPORConfig":
+        valid = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in d.items() if k in valid})
 
 
-def parse_args():
-    """Parse command line arguments and return VAPORConfig."""
-    parser = argparse.ArgumentParser(description='VAPOR training')
-    
-    # Data
-    parser.add_argument('--adata_file', type=str, default="./data/pasca_development_hvg5k_scaled.h5ad")
-    parser.add_argument('--save_path', type=str, default="./out/vapor.pth")
-    parser.add_argument('--time_label', type=str, default=None)
-    
-    # Model  
-    parser.add_argument('--latent_dim', type=int, default=64)
-    parser.add_argument('--n_dynamics', type=int, default=10)
-    parser.add_argument('--encoder_dims', type=str, default="2048,512,128")
-    parser.add_argument('--decoder_dims', type=str, default="128,512,2048")
-    
-    # Training
-    parser.add_argument('--epochs', type=int, default=500)
-    parser.add_argument('--batch_size', type=int, default=512)
-    parser.add_argument('--lr', type=float, default=5e-5)
-    parser.add_argument('--vae_lr_factor', type=float, default=0.05)
-    parser.add_argument('--device', type=str, default=None)
-    
-    # Loss weights
-    parser.add_argument('--beta', type=float, default=0.02)
-    parser.add_argument('--alpha', type=float, default=1.0)
-    parser.add_argument('--gamma', type=float, default=1.0)
-    parser.add_argument('--eta', type=float, default=1.0)
-    parser.add_argument('--eta_a', type=float, default=0.5)
-    parser.add_argument('--tau', type=float, default=0.75)
-    
-    # Options
-    parser.add_argument('--t_max', type=int, default=5)
-    parser.add_argument('--prune', action='store_true')
-    parser.add_argument('--grad_clip', type=float, default=1.0)
-    
-    args = parser.parse_args()
-    
-    # Convert string lists to int lists
-    if hasattr(args, 'encoder_dims') and isinstance(args.encoder_dims, str):
-        args.encoder_dims = [int(x) for x in args.encoder_dims.split(',')]
-    if hasattr(args, 'decoder_dims') and isinstance(args.decoder_dims, str):  
-        args.decoder_dims = [int(x) for x in args.decoder_dims.split(',')]
-    
-    # Create config from args
+# =========================
+# Argparse auto-builder
+# =========================
+
+def _is_optional(t) -> bool:
+    origin = get_origin(t)
+    if origin is Union:
+        return type(None) in get_args(t)
+    return False
+
+def _strip_optional(t):
+    if not _is_optional(t):
+        return t
+    return next(x for x in get_args(t) if x is not type(None))
+
+def _is_list(t) -> bool:
+    origin = get_origin(t)
+    return origin in (list, List)
+
+def _list_elem_type(t):
+    return get_args(t)[0] if get_args(t) else str
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser("VAPOR training")
+    cfg = VAPORConfig()
+
+    for f in fields(VAPORConfig):
+        name = f.name
+        ann = f.type
+        default = getattr(cfg, name)
+
+        # Determine base type (strip Optional)
+        base = _strip_optional(ann)
+
+        arg = f"--{name}"
+
+        # bool -> --flag / --no-flag (py3.9+)
+        if base is bool:
+            parser.add_argument(
+                arg,
+                action=argparse.BooleanOptionalAction,
+                default=default,
+                help=f"(bool) default={default}",
+            )
+            continue
+
+        # List[T] -> --x a b c (nargs="+")
+        if _is_list(base):
+            elem_t = _list_elem_type(base)
+            parser.add_argument(
+                arg,
+                type=elem_t,
+                nargs="+",
+                default=default,
+                help=f"(list[{getattr(elem_t, '__name__', str(elem_t))}]) default={default}",
+            )
+            continue
+
+        # Optional[List[T]] where default None:
+        # allow either omitted (None) or provided values.
+        if _is_optional(ann) and _is_list(base):
+            elem_t = _list_elem_type(base)
+            parser.add_argument(
+                arg,
+                type=elem_t,
+                nargs="+",
+                default=default,
+                help=f"(optional list) default={default}",
+            )
+            continue
+
+        # Everything else: str/int/float
+        # If Optional[str] default None, argparse will pass None if omitted.
+        parser.add_argument(
+            arg,
+            type=base if base in (int, float, str) else str,
+            default=default,
+            help=f"default={default}",
+        )
+
+    return parser
+
+
+def config_from_cli(argv=None) -> VAPORConfig:
+    parser = build_parser()
+    args = parser.parse_args(argv)
     return VAPORConfig(**vars(args))
 
 
-# Convenience functions
-def get_default_config():
-    """Get default configuration."""
+def default_config() -> VAPORConfig:
     return VAPORConfig()
 
 def create_config(**kwargs):
