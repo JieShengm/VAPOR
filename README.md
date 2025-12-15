@@ -11,40 +11,57 @@ Variational Autoencoder with transPort OpeRators disentangle co-occurring biolog
     cd VAPOR
     ```
 
-2. (Recommended) Create a virtual environment
+2. Create a virtual environment (choose one)
 
-    Using **conda**:
+    ### Option 1: Using conda
+
+    **Step 1. Create environment**
 
     ```bash
     conda create -n vapor-env python=3.10 -y
     conda activate vapor-env
     ```
 
-    Or using **venv**:
+    **Step 2. Verify Python Version**
 
     ```bash
-    python -m venv vapor-env
-    source vapor-env/bin/activate   # Linux/Mac
+    python --version
+    # Python 3.10.x
     ```
 
-3. Install dependencies
+    ### Option 2: Using venv (Python built-in)
 
+    **Step 1. Install Python 3.10+** 
+   
+    macOS
     ```bash
-    pip install -r requirements.txt
+    brew install python@3.10
     ```
 
-4. Install the package
+    Ubuntu
+    ```bash
+    sudo apt install python3.10 python3.10-venv
+    ```
+
+    **Step 2. Create virtual environment with Python 3.10**
+    
+    ```bash
+    python3.10 -m venv vapor-env
+    source vapor-env/bin/activate
+    ```
+
+3. Install the package
 
     ```bash
-    pip install -e .
+    python -m pip install -e .
     ```
 
 ### Notes
 
-If you plan to run notebooks, also install `Jupyter`:
+If you plan to run notebooks, also install `Jupyter notebook`:
 
 ```bash
-pip install jupyterlab
+pip install notebook
 ```
 
 For GPU acceleration, make sure you have a working CUDA setup and install the appropriate `PyTorch` version (see [PyTorch installation guide](https://pytorch.org/get-started/locally/)).
@@ -107,7 +124,7 @@ If provided, they can be:
 
 - Cell names: values from adata.obs_names (e.g., cellA,cellB).
 
-### Command Line Training
+### Command Line Training [[[need to upd main.py]]]
 
 #### Basic (unsupervised)
 
