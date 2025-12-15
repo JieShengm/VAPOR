@@ -59,7 +59,7 @@ Variational Autoencoder with transPort OpeRators disentangle co-occurring biolog
 4. Install the package
 
     ```bash
-    python -m pip install -e .
+    python3 -m pip install -e .
     ```
 
 ### Notes
