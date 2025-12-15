@@ -16,6 +16,7 @@ setup(
         "anndata",
         "scanpy",
         "scvelo",
+        "notebook"
     ],
     python_requires=">=3.10",
     author="JS",
