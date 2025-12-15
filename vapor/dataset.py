@@ -100,6 +100,7 @@ def dataset_from_adata(
     terminal_n: int = 200,
     seed: int = 0,
     scale: bool = True,
+    spatial_key: Optional[str] = None,
 ):
     """
     Build an AnnDataDataset from an AnnData object.
@@ -164,12 +165,32 @@ def dataset_from_adata(
         )
         print(f"Terminal selection: matched={matched}, sampled={len(terminal_indices)}, where={parsed}")
 
+    spatial = None
+    spatial_mean = None
+    spatial_std = None
+
+    if spatial_key is not None:
+        if spatial_key not in adata.obsm:
+            raise KeyError(f"{spatial_key} not found in adata.obsm")
+        spatial = np.asarray(adata.obsm[spatial_key])
+
+        # global zscore stats（推荐）
+        mu = spatial.mean(axis=0, keepdims=True)
+        sd = spatial.std(axis=0, keepdims=True, ddof=0)
+        sd[sd == 0] = 1.0
+
+        spatial_mean = mu
+        spatial_std = sd
+
     dataset = AnnDataDataset(
         X,
         obs_names=adata.obs_names,
         time_labels=time_labels,
         root_indices=root_indices,
         terminal_indices=terminal_indices,
+        spatial=spatial,
+        spatial_mean=spatial_mean,
+        spatial_std=spatial_std,
     )
     return dataset
 
@@ -194,6 +215,9 @@ class AnnDataDataset(Dataset):
         time_labels: Optional[np.ndarray] = None,
         root_indices: Optional[Union[List[Union[int, str]], pd.Index, np.ndarray]] = None,
         terminal_indices: Optional[Union[List[Union[int, str]], pd.Index, np.ndarray]] = None,
+        spatial=None, 
+        spatial_mean=None, 
+        spatial_std=None
     ):
         self.data = torch.tensor(np.asarray(X), dtype=torch.float32)
 
@@ -202,6 +226,10 @@ class AnnDataDataset(Dataset):
             if time_labels is not None
             else None
         )
+
+        self.spatial = torch.tensor(spatial, dtype=torch.float32) if spatial is not None else None
+        self.spatial_mean = torch.tensor(spatial_mean, dtype=torch.float32) if spatial_mean is not None else None
+        self.spatial_std = torch.tensor(spatial_std, dtype=torch.float32) if spatial_std is not None else None
 
         # Normalize obs_names
         if obs_names is not None and not isinstance(obs_names, pd.Index):
@@ -266,4 +294,8 @@ class AnnDataDataset(Dataset):
         )
         is_root = idx in self.root_indices
         is_terminal = idx in self.terminal_indices
-        return sample, time_label, is_root, is_terminal
+
+        coords = self.spatial[idx] if self.spatial is not None else None
+        if coords is None:
+            return sample, time_label, is_root, is_terminal
+        return sample, time_label, is_root, is_terminal, coords

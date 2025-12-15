@@ -186,80 +186,304 @@ class VAPOR(nn.Module):
     def compute_velocities(self, z: torch.Tensor,) -> torch.Tensor:
         return self.transport_op.compute_velocities(z)
 
-    def build_radius_graph(self, z: torch.Tensor, eps: float, min_samples: int = 2, k: int = None):
+    @staticmethod
+    def _zscore_coords(coords: torch.Tensor, mean=None, std=None, eps: float = 1e-6):
+        """
+        coords: (B, C)
+        mean/std: (1, C) or None. If None -> batch stats.
+        """
+        if mean is None or std is None:
+            mu = coords.mean(dim=0, keepdim=True)
+            sd = coords.std(dim=0, keepdim=True, unbiased=False).clamp_min(eps)
+        else:
+            mu = mean.to(coords.device)
+            sd = std.to(coords.device).clamp_min(eps)
+        return (coords - mu) / sd
+
+    def build_adaptive_spatial_then_latent_graph(
+        self,
+        z: torch.Tensor,                 # (B, D)
+        eps_z: float,                    # latent radius (required in BOTH modes if you want radius)
+        min_samples: int = 2,
+        k: int = 20,                     # optional: cap neighbors after radius
+        coords: torch.Tensor = None,     # (B, 2/3) optional
+        eps_xy: float = None,            # spatial radius for candidates; if None -> treat as no spatial constraint
+        coords_mean: torch.Tensor = None,
+        coords_std: torch.Tensor = None,
+        zscore_mode: str = "global",
+        eps: float = 1e-6,
+    ):
+        """
+        If coords/eps_xy provided:
+        candidates = spatial_radius(coords_z, eps_xy)
+        mask = candidates AND (latent_dist(z,z) <= eps_z)
+        Else:
+        mask = (latent_dist(z,z) <= eps_z)
+
+        Then build neighbor list; optionally cap to top-k by latent distance.
+        """
         B = z.size(0)
-        dists = torch.cdist(z, z)
-        mask = (dists <= eps)
+        device = z.device
+
+        # latent distance (the ONLY metric used for radius + ordering)
+        d_latent = torch.cdist(z, z)          # (B,B)
+        d2_latent = d_latent.pow(2)
+
+        # start with latent radius mask
+        mask = d_latent <= float(eps_z)
         mask.fill_diagonal_(False)
+
+        # optional spatial candidates restriction (spatial-first)
+        use_spatial = (coords is not None) and (eps_xy is not None)
+        if use_spatial:
+            # z-score coords (scale-invariant)
+            if zscore_mode == "global":
+                if coords_mean is None or coords_std is None:
+                    raise ValueError("coords_mean/std required for zscore_mode='global'")
+                mu = coords_mean.to(device)
+                sd = coords_std.to(device).clamp_min(eps)
+                coords_z = (coords - mu) / sd
+            elif zscore_mode == "batch":
+                mu = coords.mean(dim=0, keepdim=True)
+                sd = coords.std(dim=0, keepdim=True, unbiased=False).clamp_min(eps)
+                coords_z = (coords - mu) / sd
+            else:
+                raise ValueError(f"Unknown zscore_mode: {zscore_mode}")
+
+            d_xy = torch.cdist(coords_z, coords_z)
+            spatial_mask = d_xy <= float(eps_xy)
+            spatial_mask.fill_diagonal_(False)
+
+            # spatial-first restriction: keep only spatially-adjacent pairs
+            mask = mask & spatial_mask
+
+        # min_samples filtering
         deg = mask.sum(dim=1)
         noise = deg < min_samples
         mask[noise, :] = False
+
+        # build neighbor lists; optionally cap to top-k by latent distance
         neighbor_lists = []
         max_k = 0
         for i in range(B):
             idxs = mask[i].nonzero(as_tuple=True)[0]
+            if idxs.numel() == 0:
+                neighbor_lists.append(idxs)
+                continue
+
             if k is not None and idxs.numel() > k:
-                order = torch.argsort(dists[i, idxs])
+                order = torch.argsort(d_latent[i, idxs])   # latent ordering
                 idxs = idxs[order[:k]]
+
             neighbor_lists.append(idxs)
             max_k = max(max_k, idxs.numel())
-        nbr_idx = torch.zeros((B, max_k), dtype=torch.long, device=z.device)
-        nbr_mask = torch.zeros((B, max_k), dtype=torch.bool, device=z.device)
+
+        nbr_idx = torch.zeros((B, max_k), dtype=torch.long, device=device)
+        nbr_mask = torch.zeros((B, max_k), dtype=torch.bool, device=device)
         for i, idxs in enumerate(neighbor_lists):
             n = idxs.numel()
             if n > 0:
                 nbr_idx[i, :n] = idxs
                 nbr_mask[i, :n] = True
-        return nbr_idx, nbr_mask
+
+        return nbr_idx, nbr_mask, d2_latent
 
     @torch.no_grad()
-    def build_directed_paths_avgv(self, z, v, nbr_idx, nbr_mask, T, cos_threshold=0.0):
-        B, D = z.size()
-        K = nbr_idx.size(1)
-        paths = torch.zeros((B, T), dtype=torch.long, device=z.device)
-        curr = torch.arange(B, device=z.device)
+    def build_directed_paths_cos_gauss(
+        self,
+        z: torch.Tensor,                  # (B, D)
+        v: torch.Tensor,                  # (B, D)
+        nbr_idx: torch.Tensor,            # (B, K)
+        nbr_mask: torch.Tensor,           # (B, K)
+        d2_latent: torch.Tensor,          # (B, B)
+        T: int,
+        cos_threshold: float = 0.0,
+    ) -> torch.Tensor:
+        """
+        Build directed paths by choosing next neighbor maximizing:
+          score = cos_stretched(dz, v_dir) * gauss_norm(||dz||)
+
+        where dz = z_neighbor - z_current, v_dir = normalized v_current.
+        """
+        B, D = z.shape
+        device = z.device
+        paths = torch.zeros((B, T), dtype=torch.long, device=device)
+
+        curr = torch.arange(B, device=device)
         paths[:, 0] = curr
 
+        v_dir_all = F.normalize(v, dim=1, eps=1e-6)  # (B, D)
+
         for t in range(1, T):
-            nbrs = nbr_idx[curr]
-            valid = nbr_mask[curr]
-            z_n = z[nbrs]
-            z_c = z[curr].unsqueeze(1)
-            diffs = z_n - z_c
-            v_nbrs = v[nbrs] * valid.unsqueeze(-1)
-            sum_v = v_nbrs.sum(dim=1)
-            counts = valid.sum(dim=1).clamp(min=1).unsqueeze(-1)
-            v_avg = sum_v / counts
-            v_dir = F.normalize(v_avg, dim=1, eps=1e-6).unsqueeze(1)
-            cosines = F.cosine_similarity(diffs, v_dir, dim=-1)
-            cos_norm = (cosines + 1) / 2
-            cos_norm = cos_norm.masked_fill(cos_norm < cos_threshold, 0.0)
-            c_min, _ = cos_norm.min(dim=1, keepdim=True)
-            c_max, _ = cos_norm.max(dim=1, keepdim=True)
-            cos_stretched = (cos_norm - c_min) / (c_max - c_min + 1e-18)
-            d2 = torch.sum(diffs*diffs, dim=-1)
-            d_nb = torch.sqrt(d2)
-            sigma = d_nb.median(dim=1, keepdim=True).values
-            gauss_K = torch.exp(-d2 / (2 * sigma*sigma))
-            g_max, _ = gauss_K.max(dim=1, keepdim=True)
-            gauss_norm = gauss_K / (g_max + 1e-18)
+            nbrs = nbr_idx[curr]             # (B, K)
+            valid = nbr_mask[curr]           # (B, K)
+
+            z_c = z[curr].unsqueeze(1)       # (B, 1, D)
+            z_n = z[nbrs]                    # (B, K, D)
+            diffs = z_n - z_c                # (B, K, D)
+
+            vd = v_dir_all[curr].unsqueeze(1)  # (B, 1, D)
+            cos = F.cosine_similarity(diffs, vd, dim=-1)  # (B, K) in [-1,1]
+            cos = (cos + 1.0) / 2.0                        # [0,1]
+            cos = cos.masked_fill(cos < float(cos_threshold), 0.0)
+
+            # stretch per-row to [0,1]
+            c_min = cos.min(dim=1, keepdim=True).values
+            c_max = cos.max(dim=1, keepdim=True).values
+            cos_stretched = (cos - c_min) / (c_max - c_min + 1e-18)
+
+            # gaussian on latent distance
+            d2 = d2_latent[curr.unsqueeze(1), nbrs]        # (B, K)
+            d = torch.sqrt(d2.clamp_min(0.0))
+
+            # sigma per row = median neighbor distance
+            d_masked = d.masked_fill(~valid, float("nan"))
+            sigma = torch.nanmedian(d_masked, dim=1, keepdim=True).values
+            sigma = sigma.clamp_min(1e-6)
+
+            gauss = torch.exp(-d2 / (2.0 * sigma * sigma))  # (B, K)
+            g_max = gauss.max(dim=1, keepdim=True).values
+            gauss_norm = gauss / (g_max + 1e-18)
+
             score = cos_stretched * gauss_norm
-            score = score.masked_fill(~valid, float('-inf'))
-            best = score.argmax(dim=1)
-            nxt = nbrs[torch.arange(B, device=z.device), best]
+            score = score.masked_fill(~valid, float("-inf"))
+
+            best = score.argmax(dim=1)  # (B,)
+            nxt = nbrs[torch.arange(B, device=device), best]
             paths[:, t] = nxt
             curr = nxt
+
         return paths
 
-    def directed_graph_tcl_loss(self, z0: torch.Tensor, z_traj: torch.Tensor,
-                                eps: float, min_samples: int = 5,
-                                threshold: float = 0.0, k: int = 20) -> torch.Tensor:
-        adj_idx, adj_mask = self.build_radius_graph(z0, eps, min_samples, k)
+    def directed_graph_tcl_loss(
+        self,
+        z0: torch.Tensor,
+        z_traj: torch.Tensor,
+        eps_z: float,
+        min_samples: int = 5,
+        threshold: float = 0.0,   # kept for signature compatibility; used as cos_threshold here
+        k: int = 20,
+        coords: torch.Tensor = None,
+        eps_xy: float = None,
+        coords_mean: torch.Tensor = None,
+        coords_std: torch.Tensor = None,
+        zscore_mode: str = "global",
+    ):
+        """
+        TCL loss with optional spatial constraint in the neighbor graph.
+
+        Returns:
+          loss, paths, adj_idx, adj_mask
+        """
+        # Graph (neighbor list)
+        adj_idx, adj_mask, d2_latent = self.build_adaptive_spatial_then_latent_graph(
+            z=z0,
+            eps_z=eps_z,
+            min_samples=min_samples,
+            k=k,
+            coords=coords,
+            eps_xy=eps_xy,
+            coords_mean=coords_mean,
+            coords_std=coords_std,
+            zscore_mode=zscore_mode,
+        )
+
+        # Paths (directed)
         v0 = self.compute_velocities(z0)
         T = z_traj.size(0)
-        paths = self.build_directed_paths_avgv(z0, v0, adj_idx, adj_mask, T, threshold)
-        loss = torch.stack([F.mse_loss(z_traj[t], z0[paths[:,t]]) for t in range(1, T)]).mean()
+
+        # reuse 'threshold' as cos threshold (keeps old API)
+        paths = self.build_directed_paths_cos_gauss(
+            z=z0,
+            v=v0,
+            nbr_idx=adj_idx,
+            nbr_mask=adj_mask,
+            d2_latent=d2_latent,
+            T=T,
+            cos_threshold=threshold,
+        )
+
+        # Loss: match integrated z_traj[t] to the “walked” nodes on z0 manifold
+        loss = torch.stack(
+            [F.mse_loss(z_traj[t], z0[paths[:, t]]) for t in range(1, T)]
+        ).mean()
+
         return loss, paths, adj_idx, adj_mask
+
+    # def build_radius_graph(self, z: torch.Tensor, eps: float, min_samples: int = 2, k: int = None):
+    #     B = z.size(0)
+    #     dists = torch.cdist(z, z)
+    #     mask = (dists <= eps)
+    #     mask.fill_diagonal_(False)
+    #     deg = mask.sum(dim=1)
+    #     noise = deg < min_samples
+    #     mask[noise, :] = False
+    #     neighbor_lists = []
+    #     max_k = 0
+    #     for i in range(B):
+    #         idxs = mask[i].nonzero(as_tuple=True)[0]
+    #         if k is not None and idxs.numel() > k:
+    #             order = torch.argsort(dists[i, idxs])
+    #             idxs = idxs[order[:k]]
+    #         neighbor_lists.append(idxs)
+    #         max_k = max(max_k, idxs.numel())
+    #     nbr_idx = torch.zeros((B, max_k), dtype=torch.long, device=z.device)
+    #     nbr_mask = torch.zeros((B, max_k), dtype=torch.bool, device=z.device)
+    #     for i, idxs in enumerate(neighbor_lists):
+    #         n = idxs.numel()
+    #         if n > 0:
+    #             nbr_idx[i, :n] = idxs
+    #             nbr_mask[i, :n] = True
+    #     return nbr_idx, nbr_mask
+
+    # @torch.no_grad()
+    # def build_directed_paths_avgv(self, z, v, nbr_idx, nbr_mask, T, cos_threshold=0.0):
+    #     B, D = z.size()
+    #     K = nbr_idx.size(1)
+    #     paths = torch.zeros((B, T), dtype=torch.long, device=z.device)
+    #     curr = torch.arange(B, device=z.device)
+    #     paths[:, 0] = curr
+
+    #     for t in range(1, T):
+    #         nbrs = nbr_idx[curr]
+    #         valid = nbr_mask[curr]
+    #         z_n = z[nbrs]
+    #         z_c = z[curr].unsqueeze(1)
+    #         diffs = z_n - z_c
+    #         v_nbrs = v[nbrs] * valid.unsqueeze(-1)
+    #         sum_v = v_nbrs.sum(dim=1)
+    #         counts = valid.sum(dim=1).clamp(min=1).unsqueeze(-1)
+    #         v_avg = sum_v / counts
+    #         v_dir = F.normalize(v_avg, dim=1, eps=1e-6).unsqueeze(1)
+    #         cosines = F.cosine_similarity(diffs, v_dir, dim=-1)
+    #         cos_norm = (cosines + 1) / 2
+    #         cos_norm = cos_norm.masked_fill(cos_norm < cos_threshold, 0.0)
+    #         c_min, _ = cos_norm.min(dim=1, keepdim=True)
+    #         c_max, _ = cos_norm.max(dim=1, keepdim=True)
+    #         cos_stretched = (cos_norm - c_min) / (c_max - c_min + 1e-18)
+    #         d2 = torch.sum(diffs*diffs, dim=-1)
+    #         d_nb = torch.sqrt(d2)
+    #         sigma = d_nb.median(dim=1, keepdim=True).values
+    #         gauss_K = torch.exp(-d2 / (2 * sigma*sigma))
+    #         g_max, _ = gauss_K.max(dim=1, keepdim=True)
+    #         gauss_norm = gauss_K / (g_max + 1e-18)
+    #         score = cos_stretched * gauss_norm
+    #         score = score.masked_fill(~valid, float('-inf'))
+    #         best = score.argmax(dim=1)
+    #         nxt = nbrs[torch.arange(B, device=z.device), best]
+    #         paths[:, t] = nxt
+    #         curr = nxt
+    #     return paths
+
+    # def directed_graph_tcl_loss(self, z0: torch.Tensor, z_traj: torch.Tensor,
+    #                             eps: float, min_samples: int = 5,
+    #                             threshold: float = 0.0, k: int = 20) -> torch.Tensor:
+    #     adj_idx, adj_mask = self.build_radius_graph(z0, eps, min_samples, k)
+    #     v0 = self.compute_velocities(z0)
+    #     T = z_traj.size(0)
+    #     paths = self.build_directed_paths_avgv(z0, v0, adj_idx, adj_mask, T, threshold)
+    #     loss = torch.stack([F.mse_loss(z_traj[t], z0[paths[:,t]]) for t in range(1, T)]).mean()
+    #     return loss, paths, adj_idx, adj_mask
 
     def flag_direction_loss_graph(self, z0: torch.Tensor, v0: torch.Tensor,
                                   is_start: torch.BoolTensor, is_term: torch.BoolTensor,

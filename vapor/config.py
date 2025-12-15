@@ -21,6 +21,18 @@ class VAPORConfig:
     terminal_indices: Optional[List[int]] = None
     scale: bool = True
 
+    # Graph / path (TCL)
+    eps_z_k: int = 30          # estimate eps_z using the k-th nearest neighbor
+    graph_k: int = 20          # maximum number of neighbors kept per node (top-k)
+    min_samples: int = 5       # minimum number of neighbors required; otherwise treated as noise
+
+    # Spatial (optional)
+    spatial_key: Optional[str] = None   # key in adata.obsm (e.g. "spatial"); None => non-spatial mode
+    eps_xy: Optional[float] = None      # spatial radius in z-scored coord space; None => adaptive per-node radius
+    zscore_mode: str = "global"         # "global" | "batch"
+    expand_factor: float = 1.25         # adaptive spatial radius multiplier
+    eps_cap: Optional[float] = 3.0      # cap adaptive eps_xy_i (z-scored units)
+
     # Model
     latent_dim: int = 64
     n_dynamics: int = 10
@@ -31,7 +43,6 @@ class VAPORConfig:
     epochs: int = 500
     batch_size: int = 512
     lr: float = 5e-5
-    # vae_lr_factor: float = 0.05
     device: Optional[str] = None  # resolved later in training
 
     # Loss weights
@@ -39,7 +50,6 @@ class VAPORConfig:
     alpha: float = 1.0
     gamma: float = 1.0
     eta: float = 1.0
-    # eta_a: float = 0.5
     tau: float = 0.75
 
     # Training options

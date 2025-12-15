@@ -228,8 +228,15 @@ def train_model(
 
         horizons = torch.randperm(config.t_max, device=config.device).add_(1).tolist()
 
-        for batch_idx, (x, t_data, is_root, is_term) in enumerate(train_loader):
+        for batch_idx, batch in enumerate(train_loader):
             batch_count += 1
+            
+            if len(batch) == 5:
+                x, t_data, is_root, is_term, coords = batch
+            else:
+                x, t_data, is_root, is_term = batch
+                coords = None
+
             x, t_data = x.to(config.device), t_data.to(config.device)
             is_root, is_term = is_root.to(config.device), is_term.to(config.device)
 
@@ -257,8 +264,24 @@ def train_model(
             z_traj = model.integrate(z0, t_span)
             z0_detached = z0.detach()
 
-            eps = torch.median(torch.cdist(z0_detached, z0_detached).topk(30, 1, False).values[:, -1]).item()
-            traj_loss, paths, adj_idx, adj_mask = model.directed_graph_tcl_loss(z0_detached, z_traj, eps)
+            B = z0_detached.size(0)
+            k_nn = min(config.eps_z_k, B - 1)
+            d = torch.cdist(z0_detached, z0_detached)
+            eps_z = torch.median(d.topk(k_nn, dim=1, largest=False).values[:, -1]).item()
+
+            traj_loss, paths, adj_idx, adj_mask = model.directed_graph_tcl_loss(
+                z0_detached, z_traj, eps_z,
+                min_samples=config.min_samples,
+                k=config.graph_k,
+                threshold=0.0,  # cos_threshold (config?)
+                coords=coords,
+                eps_xy=config.eps_xy,  # None => latent-only
+                coords_mean=getattr(dataset, "spatial_mean", None),
+                coords_std=getattr(dataset, "spatial_std", None),
+                zscore_mode=config.zscore_mode,
+            )
+            # eps = torch.median(torch.cdist(z0_detached, z0_detached).topk(30, 1, False).values[:, -1]).item()
+            # traj_loss, paths, adj_idx, adj_mask = model.directed_graph_tcl_loss(z0_detached, z_traj, eps)
 
             v0 = model.compute_velocities(z0_detached)
             prior_loss = model.flag_direction_loss_graph(z0_detached, v0,
