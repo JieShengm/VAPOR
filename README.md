@@ -31,9 +31,15 @@ Variational Autoencoder with transPort OpeRators disentangle co-occurring biolog
 
     ### Option 2: Using venv (Python built-in)
 
-    **Step 1. Install Python 3.10+** 
+    **Step 1. Install Python 3.10+ (Skip if already installed)**
+
+    Check your Python version
+    ```bash
+    python3 --version
+    ```
+    If the version is 3.10 or higher, proceed to Step 2.
    
-    macOS
+   macOS (Homebrew)
     ```bash
     brew install python@3.10
     ```
@@ -43,14 +49,14 @@ Variational Autoencoder with transPort OpeRators disentangle co-occurring biolog
     sudo apt install python3.10 python3.10-venv
     ```
 
-    **Step 2. Create virtual environment with Python 3.10**
+    **Step 2. Create virtual environment with Python 3.10+**
     
     ```bash
-    python3.10 -m venv vapor-env
+    python3 -m venv vapor-env
     source vapor-env/bin/activate
     ```
 
-3. Install the package
+4. Install the package
 
     ```bash
     python -m pip install -e .
