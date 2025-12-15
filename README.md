@@ -16,62 +16,69 @@ Variational Autoencoder with transPort OpeRators disentangle co-occurring biolog
 
     ### Option 1: Using conda
 
-    **Step 1. Create environment**
+    * **Step 1. Create environment**
     
-    ```bash
-    conda create -n vapor-env python=3.10 -y
-    conda activate vapor-env
-    ```
+        ```bash
+        conda create -n vapor-env python=3.10 -y
+        conda activate vapor-env
+        ```
     
-    **Step 2. Verify Python Version**
+    * **Step 2. Verify Python Version**
     
-    ```bash
-    python --version
-    # Python 3.10.x
-    ```
+        ```bash
+        python --version
+        # Python 3.10.x
+        ```
 
     ### Option 2: Using venv (Python built-in)
 
-    **Step 0. Check Python version**
+    * **Step 0. Check Python version**
 
-    ```bash
-    python3 --version
-    ```
-    If the version is 3.10 or newer, proceed to Step 2.
-    Otherwise, install Python 3.10+.
+        ```bash
+        python3 --version
+        ```
+        If the version is 3.10 or newer, proceed to Step 2.
+        Otherwise, install Python 3.10+.
 
-    **Step 1. Install Python 3.10+ (Skip if already installed)**
+    * **Step 1. Install Python 3.10+ (Skip if already installed)**
    
-    macOS (Homebrew)
-    ```bash
-    brew install python@3.10
-    ```
-
-    Ubuntu
-    ```bash
-    sudo apt update
-    sudo apt install python3.10 python3.10-venv
-    ```
-
-    **Step 2. Create and activate a virtual environment with Python 3.10+**
+        * macOS (Homebrew)
+            ```bash
+            brew install python@3.10
+            ```
     
-    ```bash
-    python3 -m venv vapor-env
-    source vapor-env/bin/activate
-    ```
+        * Ubuntu
+            ```bash
+            sudo apt update
+            sudo apt install python3.10 python3.10-venv
+            ```
+
+    * **Step 2. Create and activate a virtual environment with Python 3.10+**
+    
+        ```bash
+        python3 -m venv vapor-env
+        source vapor-env/bin/activate
+        ```
 
 3. Install VAPOR
 
-   Core library only
+   * Core library only
    
-   ```bash
-   python3 -m pip install -e .
-   ```
+       ```bash
+       pip install -e .
+       ```
 
-   With Jupyter / VS Code Notebook support (recommended)
-   ```bash
-   pip install -e ".[notebook]"
-   ```
+   * With Jupyter / VS Code Notebook support (recommended)
+       ```bash
+       pip install -e ".[notebook]"
+       ```
+       Register the Jupyter kernel (one-time)
+       ```bash
+       python3 -m ipykernel install \
+         --user \
+         --name vapor-env \
+         --display-name "Python (vapor-env)"
+      ```
     
 For GPU acceleration, make sure you have a working CUDA setup and install the appropriate `PyTorch` version (see [PyTorch installation guide](https://pytorch.org/get-started/locally/)).
 
