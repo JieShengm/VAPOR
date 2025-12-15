@@ -62,14 +62,6 @@ Variational Autoencoder with transPort OpeRators disentangle co-occurring biolog
     python3 -m pip install -e .
     ```
 
-### Notes
-
-If you plan to run notebooks, also install `Jupyter notebook`:
-
-```bash
-pip install notebook
-```
-
 For GPU acceleration, make sure you have a working CUDA setup and install the appropriate `PyTorch` version (see [PyTorch installation guide](https://pytorch.org/get-started/locally/)).
 
 ## Notebook Usage
