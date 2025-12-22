@@ -16,3 +16,8 @@ build/
 
 # OS files
 .DS_Store
+
+# local data
+data/GBM/
+data/*.h5ad
+*.pptx
