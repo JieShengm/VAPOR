@@ -84,6 +84,8 @@ For GPU acceleration, make sure you have a working CUDA setup and install the ap
 
 ## Notebook Usage
 
+For a complete tutorial, please refer to [`examples/pancreas.ipynb`](examples/pancreas.ipynb).
+
 ```python
 import vapor
 import anndata as ad
