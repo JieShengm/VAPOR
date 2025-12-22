@@ -1,4 +1,5 @@
 import os, time
+import math
 from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -13,6 +14,8 @@ from torch.utils.data import DataLoader, Subset
 import matplotlib.pyplot as plt
 
 from .config import VAPORConfig
+from .dataset import GroupedBatchSampler
+from .utils import get_base_dataset, resolve_device
 
 def psi_structure_loss(
     Psi_list,
@@ -91,7 +94,6 @@ def _evaluate_vae_on_loader(model, loader, device="cuda"):
     if total_n == 0:
         return np.nan, np.nan
     return total_mse_mean / total_n, total_kld_mean / total_n
-
 
 # ============== Optional ==============
 def _save_epoch_csv_and_plots(history, save_dir: Path, exp_name: str = "run"):
@@ -175,9 +177,13 @@ def train_model(
                 setattr(config, key, value)
             else:
                 print(f"Warning: Unknown parameter '{key}' ignored")
-
+                
+    # ---------- device ----------
+    device = resolve_device(config)
+    config.device = device 
+    
     print(f"Training on device: {config.device}")
-    print(f"Training for {config.epochs} epochs with batch size {config.batch_size}")
+    # print(f"Training for {epochs} epochs with batch size {config.batch_size}")
 
     model.to(config.device)
 
@@ -186,23 +192,64 @@ def train_model(
     other_params = [p for n, p in model.named_parameters() if not n.startswith("vae.")]
 
     vae_scale = model.vae.latent_dim / model.vae.input_dim
-    opt_vae = torch.optim.Adam(vae_params, lr= vae_scale * config.lr)
-    opt_to  = torch.optim.Adam(other_params, lr=config.lr)
+    opt_vae = torch.optim.AdamW(vae_params, lr= vae_scale * config.lr)
+    opt_to  = torch.optim.AdamW(other_params, lr=config.lr)
 
-    # ---------- DataLoader ----------
+    # # ---------- DataLoader ----------
+    # if split_train_test:
+    #     n = len(dataset)
+    #     n_test = max(1, int(round(n * test_size)))
+    #     n_train = n - n_test
+    #     g = torch.Generator().manual_seed(42)
+    #     train_subset, test_subset = torch.utils.data.random_split(dataset, [n_train, n_test], generator=g)
+    #     train_loader = DataLoader(train_subset, batch_size=config.batch_size, shuffle=True)
+    #     test_loader  = DataLoader(test_subset,  batch_size=config.batch_size, shuffle=False)
+    #     print(f"Data split: train={n_train}, test={n_test} (test_size={test_size})")
+    # else:
+    #     train_loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)
+    #     test_loader  = None
+
+    use_grouped = config.by_batch and (getattr(dataset, "batch_ids", None) is not None)
+
     if split_train_test:
         n = len(dataset)
         n_test = max(1, int(round(n * test_size)))
         n_train = n - n_test
         g = torch.Generator().manual_seed(42)
         train_subset, test_subset = torch.utils.data.random_split(dataset, [n_train, n_test], generator=g)
-        train_loader = DataLoader(train_subset, batch_size=config.batch_size, shuffle=True)
-        test_loader  = DataLoader(test_subset,  batch_size=config.batch_size, shuffle=False)
-        print(f"Data split: train={n_train}, test={n_test} (test_size={test_size})")
-    else:
-        train_loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)
-        test_loader  = None
+        print(
+            f"Train / Test split:\n"
+            f"  Total samples : {n}\n"
+            f"  Train samples : {len(train_subset)}\n"
+            f"  Test samples  : {len(test_subset)}\n"
+            f"  Test fraction : {len(test_subset) / n:.3f}"
+        )
+        N = len(train_subset)
 
+        if use_grouped:
+            train_loader = DataLoader(train_subset, batch_sampler=GroupedBatchSampler(train_subset, batch_size=config.batch_size, shuffle=True, seed=42))
+            test_loader  = DataLoader(test_subset,  batch_sampler=GroupedBatchSampler(test_subset,  batch_size=config.batch_size, shuffle=False, seed=42))
+        else:
+            train_loader = DataLoader(train_subset, batch_size=config.batch_size, shuffle=True)
+            test_loader  = DataLoader(test_subset,  batch_size=config.batch_size, shuffle=False)
+    else:
+         # ---- PRINT DATASET SIZE ----
+        print(
+            f"Training on full dataset:\n"
+            f"  Total samples : {len(dataset)}\n"
+            f"  Test samples  : 0"
+        )
+        N = len(dataset)
+        if use_grouped:
+            train_loader = DataLoader(dataset, batch_sampler=GroupedBatchSampler(dataset, batch_size=config.batch_size, shuffle=True, seed=42))
+        else:
+            train_loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)
+        test_loader = None
+
+    base_ds = get_base_dataset(train_loader.dataset)
+    has_spatial = getattr(base_ds, "has_spatial", False)
+    has_batch   = getattr(base_ds, "has_batch", False)
+    
     # ---------- params ----------
     history = {
         "epoch": [],
@@ -219,7 +266,11 @@ def train_model(
     print("\nStarting training...")
     print("-" * 80)
 
-    for epoch in range(1, config.epochs + 1):
+    steps_per_epoch = math.ceil(N / config.batch_size)
+    epochs = math.ceil(config.total_steps / steps_per_epoch)
+    print(f"Training for {epochs} epochs with batch size {config.batch_size}")
+
+    for epoch in range(1, epochs + 1):
         epoch_start = time.time()
         model.train()
 
@@ -230,12 +281,38 @@ def train_model(
 
         for batch_idx, batch in enumerate(train_loader):
             batch_count += 1
-            
-            if len(batch) == 5:
+
+            if has_spatial and has_batch:
+                x, t_data, is_root, is_term, coords, batch_id = batch
+            elif has_spatial and (not has_batch):
                 x, t_data, is_root, is_term, coords = batch
+                batch_id = None
+            elif (not has_spatial) and has_batch:
+                x, t_data, is_root, is_term, batch_id = batch
+                coords = None
             else:
                 x, t_data, is_root, is_term = batch
                 coords = None
+                batch_id = None
+            # else:
+            #     raise ValueError(f"Unexpected batch format (len={len(batch)}).")
+
+            if getattr(config, "by_batch", False):
+                if batch_id is None:
+                    if not hasattr(config, "_warned_no_batch_ids"):
+                        print(
+                            "[WARN] config.by_batch=True but dataset has no batch_id. "
+                            "Likely you did not provide batch_key to dataset_from_adata(). "
+                            "Falling back to by_batch=False."
+                        )
+                        config._warned_no_batch_ids = True
+                    config.by_batch = False 
+                else:
+                    if use_grouped:
+                        if len(set(batch_id)) != 1:
+                            raise RuntimeError(
+                                f"Grouped batching violated: got multiple batch_ids in batch: {set(batch_id)}"
+                            )
 
             x, t_data = x.to(config.device), t_data.to(config.device)
             is_root, is_term = is_root.to(config.device), is_term.to(config.device)
@@ -247,14 +324,15 @@ def train_model(
             kl_loss    = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
             vae_loss   = recon_loss + config.beta * kl_loss
 
-            opt_vae.zero_grad()
-            vae_loss.backward()
-            opt_vae.step()
+            # opt_vae.zero_grad()
+            # vae_loss.backward()
+            # opt_vae.step()
+            
             t1 = time.time()
 
-            epoch_metrics['vae'] += (t1 - t0)
-            epoch_metrics['mse'] += recon_loss.item()
-            epoch_metrics['kld'] += kl_loss.item()
+            # epoch_metrics['vae'] += (t1 - t0)
+            # epoch_metrics['mse'] += recon_loss.item()
+            # epoch_metrics['kld'] += kl_loss.item()
 
             # ---- Transport step ----
             t2 = time.time()
@@ -265,23 +343,23 @@ def train_model(
             z0_detached = z0.detach()
 
             B = z0_detached.size(0)
-            k_nn = min(config.eps_z_k, B - 1)
-            d = torch.cdist(z0_detached, z0_detached)
-            eps_z = torch.median(d.topk(k_nn, dim=1, largest=False).values[:, -1]).item()
+            # k_nn = min(config.eps_z_k, B - 1)
+            # d = torch.cdist(z0_detached, z0_detached)
+            # eps_z = torch.median(d.topk(k_nn, dim=1, largest=False).values[:, -1]).item()
 
-            traj_loss, paths, adj_idx, adj_mask = model.directed_graph_tcl_loss(
-                z0_detached, z_traj, eps_z,
-                min_samples=config.min_samples,
-                k=config.graph_k,
-                threshold=0.0,  # cos_threshold (config?)
-                coords=coords,
-                eps_xy=config.eps_xy,  # None => latent-only
-                coords_mean=getattr(dataset, "spatial_mean", None),
-                coords_std=getattr(dataset, "spatial_std", None),
-                zscore_mode=config.zscore_mode,
-            )
-            # eps = torch.median(torch.cdist(z0_detached, z0_detached).topk(30, 1, False).values[:, -1]).item()
-            # traj_loss, paths, adj_idx, adj_mask = model.directed_graph_tcl_loss(z0_detached, z_traj, eps)
+            # traj_loss, paths, adj_idx, adj_mask = model.directed_graph_tcl_loss(
+            #     z0_detached, z_traj, eps_z,
+            #     min_samples=config.min_samples,
+            #     k=config.graph_k,
+            #     threshold=0.0,  # cos_threshold (config?)
+            #     coords=coords,
+            #     eps_xy=config.eps_xy,  # None => latent-only
+            #     coords_mean=getattr(dataset, "spatial_mean", None),
+            #     coords_std=getattr(dataset, "spatial_std", None),
+            #     zscore_mode=config.zscore_mode,
+            # )
+            eps = torch.median(torch.cdist(z0_detached, z0_detached).topk(30, 1, False).values[:, -1]).item()
+            traj_loss, paths, adj_idx, adj_mask = model.directed_graph_tcl_loss(z0_detached, z_traj, eps)
 
             v0 = model.compute_velocities(z0_detached)
             prior_loss = model.flag_direction_loss_graph(z0_detached, v0,
@@ -290,17 +368,46 @@ def train_model(
             # psi_loss   = psi_mutual_independence_loss(model.transport_op.Psi, alpha=config.eta_a, beta=1.0-config.eta_a)
             psi_loss, _ = psi_structure_loss(
                 model.transport_op.Psi,
-                w_scale = 0.2, #config.psi_w_scale,     # 0.1~1.0
+                w_scale = 0.05, #config.psi_w_scale,     # 0.1~1.0
                 w_orth  = config.eta, #config.psi_w_orth,      # 0.1~1.0
                 spec_cap= 0.0 #config.psi_spec_cap
                 )
 
             to_loss = (config.alpha * traj_loss + config.gamma * prior_loss + config.eta * psi_loss)
 
+            # opt_to.zero_grad()
+            # to_loss.backward()
+            # opt_to.step()
+            
+            # joint loss
+            
+            # z1_pred = integrate(z0, dt)[-1]
+            # z1_pred = model.integrate(z0_detached, t_span)[-1]
+
+            # x1_pred = model.vae.decode(z1_pred)
+            # mu1, lv1 = model.vae.encode(x1_pred)
+            # z1_reenc = model.vae.reparameterize(mu1, lv1)
+
+            # consistency = (z1_reenc - z1_pred.detach()).pow(2).mean()
+            loss = vae_loss + to_loss #+ consistency
+        
+
+            # zero grad + backward once + step
+            opt_vae.zero_grad()
             opt_to.zero_grad()
-            to_loss.backward()
+            loss.backward()
+            opt_vae.step()
+            torch.nn.utils.clip_grad_norm_(
+                model.transport_op.parameters(),
+                max_norm=config.grad_clip
+            )
             opt_to.step()
+            
             t3 = time.time()
+            
+            epoch_metrics['vae'] += (t1 - t0)
+            epoch_metrics['mse'] += recon_loss.item()
+            epoch_metrics['kld'] += kl_loss.item()
 
             epoch_metrics['to']    += (t3 - t2)
             epoch_metrics['traj']  += traj_loss.item()
@@ -322,7 +429,7 @@ def train_model(
 
         if verbose:
             if epoch % config.print_freq == 0:
-                print(f"Epoch {epoch:3d}/{config.epochs} | "
+                print(f"Epoch {epoch:3d}/{epochs} | "
                     f"Time: {epoch_time:5.2f}s | "
                     f"Recon: {epoch_metrics['mse']:.4f} | "
                     f"KL: {epoch_metrics['kld']:.4f} | "
@@ -330,7 +437,7 @@ def train_model(
                     f"Prior: {epoch_metrics['prior']:.4f} | "
                     f"Psi: {epoch_metrics['psi']:.4f}")
 
-        if epoch % max(1, config.epochs // 10) == 0:
+        if epoch % max(1, epochs // 10) == 0:
             model.transport_op.sort_and_prune_psi()
             norms = [psi.pow(2).mean().sqrt().item() for psi in model.transport_op.Psi]
             if verbose:

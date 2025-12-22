@@ -28,8 +28,10 @@ class VAPORConfig:
 
     # Spatial (optional)
     spatial_key: Optional[str] = None   # key in adata.obsm (e.g. "spatial"); None => non-spatial mode
+    batch_key: Optional[str] = None     # key in adata.obs for grouping spatial coords (e.g. "batch"); None => all data together
+    by_batch:  bool = True          # whether to group by batch_key during training
     eps_xy: Optional[float] = None      # spatial radius in z-scored coord space; None => adaptive per-node radius
-    zscore_mode: str = "global"         # "global" | "batch"
+    zscore_mode: str = "batch"         # "global" | "batch"
     expand_factor: float = 1.25         # adaptive spatial radius multiplier
     eps_cap: Optional[float] = 3.0      # cap adaptive eps_xy_i (z-scored units)
 
@@ -40,22 +42,22 @@ class VAPORConfig:
     decoder_dims: List[int] = field(default_factory=lambda: [128, 512, 2048])
 
     # Training
-    epochs: int = 500
+    total_steps: int = 1750
     batch_size: int = 512
-    lr: float = 5e-5
-    device: Optional[str] = None  # resolved later in training
+    lr: float = 3e-4
+    device: Optional[str] = "cuda"
 
     # Loss weights
-    beta: float = 0.02
+    beta: float = 0.01
     alpha: float = 1.0
     gamma: float = 1.0
     eta: float = 1.0
-    tau: float = 0.75
+    tau: float = 0.5
 
     # Training options
     t_max: int = 5
     prune: bool = False
-    grad_clip: float = 1.0
+    grad_clip: float = 0.2
     print_freq: int = 1
     plot_losses: bool = True
 
