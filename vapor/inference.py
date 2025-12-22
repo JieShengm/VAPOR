@@ -60,7 +60,7 @@ def extract_latents_and_dynamics(
     adata_vapor.uns["gene_names"] = adata.var_names.tolist()
     adata_vapor.uns["n_dynamics"] = model.transport_op.n_dynamics
     if 'X_umap' in adata.obsm and adata.obsm['X_umap'] is not None:
-        adata_VAPOR.obsm['X_gex_umap'] = adata.obsm['X_umap']
+        adata_vapor.obsm['X_gex_umap'] = adata.obsm['X_umap']
     
     return adata_vapor
 
