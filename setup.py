@@ -21,6 +21,8 @@ setup(
         "anndata",
         "scanpy",
         "scvelo",
+        "tqdm",
+        "gseapy"
     ],
     extras_require={
         "notebook": [
