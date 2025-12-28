@@ -102,17 +102,6 @@ dataset = vapor.dataset_from_adata(
     scale=True
 )
 
-# Or: create dataset using selection rules (supervised)
-dataset = vapor.dataset_from_adata(
-    adata,
-    root_where=["celltype=Early RG", "Age=pcw16"],
-    terminal_where=["celltype=Glutamatergic", "Age=pcw24"],
-    root_n=200,
-    terminal_n=200,
-    seed=42,
-    scale=True
-)
-
 # Config
 config = VAPORConfig(
     latent_dim=64,
