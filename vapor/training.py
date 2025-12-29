@@ -575,7 +575,9 @@ def train_model(
         print("-" * 80)
         print(f"Training completed. total_time={time.time()-t_start:.2f}s")
 
-    return history
+    plot_losses(history, save_dir=save_dir, show=True)
+
+    return model
 
 def ema(x, alpha=0.98):
     """Exponential moving average."""
@@ -590,8 +592,11 @@ def plot_losses(history, save_dir=None, show=True):
     from pathlib import Path
 
     plt.figure(figsize=(6,4))
-    plt.plot(history["train_mse"], label="Recon")
-    plt.plot(history["train_traj"], label="Traj")
+    plt.plot(history["recon"], label="Recon")
+    plt.plot(history["kld"], label="KLD")
+    plt.plot(history["traj"], label="Traj")
+    plt.plot(history["prior"], label="Prior")
+    plt.plot(history["total"], label="Total")
     plt.legend()
     plt.tight_layout()
 
