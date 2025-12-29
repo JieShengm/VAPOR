@@ -249,8 +249,8 @@ def train_model(
     config: Optional[Union['VAPORConfig', Dict[str, Any]]] = None,
     split_train_test: bool = True,
     test_size: float = 0.2,
-    save_dir: Optional[Union[str, Path]] = None,
-    exp_name: str = "run_fullgraph",
+    save_dir: Optional[Union[str, Path]] = 'vapor/out/',
+    exp_name: str = "run",
     verbose: bool = True,
     graph_k: Optional[int] = None,
     graph_update_every_steps: int = 50,
@@ -388,6 +388,15 @@ def train_model(
     # ---------- window logging ----------
     win = dict(mse=0.0, kld=0.0, traj=0.0, prior=0.0, n=0)
 
+    history = {
+    "step": [],
+    "recon": [],
+    "kld": [],
+    "traj": [],
+    "prior": [],
+    "total": [],
+    "phase": [],}
+
     t_start = time.time()
     model.train()
 
@@ -517,6 +526,15 @@ def train_model(
         if not is_warmup:
             opt_to.step()
 
+        # -------- record history (STEP-BASED) --------
+        history["step"].append(global_step)
+        history["recon"].append(float(recon_loss.item()))
+        history["kld"].append(float(kl_loss.item()))
+        history["traj"].append(float(traj_loss.item()) if not is_warmup else 0.0)
+        history["prior"].append(float(prior_loss.item()) if not is_warmup else 0.0)
+        history["total"].append(float(loss.item()))
+        history["phase"].append(phase)    
+
         # -------- window logging --------
         win["mse"] += float(recon_loss.item())
         win["kld"] += float(kl_loss.item())
@@ -557,14 +575,7 @@ def train_model(
         print("-" * 80)
         print(f"Training completed. total_time={time.time()-t_start:.2f}s")
 
-    plot_losses(
-    f"{save_dir}/csv/{exp_name}_step_metrics.csv",
-    out_path="logs/figs/losses.png",
-    use_ema=True,
-    ema_alpha=0.98,
-)
-
-    return model
+    return history
 
 def ema(x, alpha=0.98):
     """Exponential moving average."""
@@ -574,49 +585,22 @@ def ema(x, alpha=0.98):
         y[i] = alpha * y[i-1] + (1 - alpha) * x[i]
     return y
 
-def plot_losses(
-    csv_path,
-    out_path=None,
-    use_ema=True,
-    ema_alpha=0.98,
-    logy=False,
-    figsize=(8, 5),
-):
-    df = pd.read_csv(csv_path)
+def plot_losses(history, save_dir=None, show=True):
+    import matplotlib.pyplot as plt
+    from pathlib import Path
 
-    step = df["step"].values
-
-    losses = {
-        "Recon": df["recon"].values,
-        "KL": df["kl"].values,
-    }
-
-    if "traj" in df.columns:
-        losses["Traj"] = df["traj"].values
-    if "prior" in df.columns:
-        losses["Prior"] = df["prior"].values
-
-    plt.figure(figsize=figsize)
-
-    for name, y in losses.items():
-        if use_ema:
-            y_plot = ema(y, ema_alpha)
-            plt.plot(step, y_plot, label=f"{name} (EMA)")
-        else:
-            plt.plot(step, y, alpha=0.4, label=name)
-
-    plt.xlabel("Step")
-    plt.ylabel("Loss")
-    if logy:
-        plt.yscale("log")
-
+    plt.figure(figsize=(6,4))
+    plt.plot(history["train_mse"], label="Recon")
+    plt.plot(history["train_traj"], label="Traj")
     plt.legend()
     plt.tight_layout()
 
-    if out_path is not None:
-        out_path = Path(out_path)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(out_path, dpi=200)
-        print(f"[saved] {out_path}")
+    if save_dir is not None:
+        save_dir = Path(save_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
+        plt.savefig(save_dir / "loss.png", dpi=200)
 
-    plt.show()
+    if show:
+        plt.show()
+    else:
+        plt.close()
