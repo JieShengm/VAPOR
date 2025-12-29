@@ -183,63 +183,90 @@ def _build_directed_soft_targets_avgv_global(
     paths[:, 0] = curr
 
     for t in range(1, T):
-        nbrs = nbr_idx_global[curr]         # (B,K)
-        z_n  = z_all[nbrs]                  # (B,K,D)
-        z_c  = z_all[curr].unsqueeze(1)     # (B,1,D)
-        diffs = z_n - z_c
+        nbrs = nbr_idx_global[curr]           # (B,K)
+        z_n  = z_all[nbrs]                    # (B,K,D)
+        z_c  = z_all[curr].unsqueeze(1)       # (B,1,D)
+        diffs = z_n - z_c                     # (B,K,D)
 
-        v_nbrs = v_all[nbrs]
-        v_avg = v_nbrs.mean(dim=1)
-        v_dir = F.normalize(v_avg, dim=1, eps=1e-6).unsqueeze(1)
+        # --- base: velocity projection term ---
+        v_dir = F.normalize(v_all[curr], dim=1, eps=1e-6).unsqueeze(1)
+        cosines = F.cosine_similarity(diffs, v_dir, dim=-1)            # (B,K) in [-1,1]
+        cos_norm = (cosines + 1.0) / 2.0                               # -> [0,1]
 
-        cosines = F.cosine_similarity(diffs, v_dir, dim=-1)
-        cos_norm = (cosines + 1) / 2
-        cos_norm = cos_norm.masked_fill(cos_norm < cos_threshold, 0.0)
+        if cos_threshold > 0.0:
+            cos_norm = cos_norm.masked_fill(cos_norm < cos_threshold, 0.0)
+
+        # stretch each row to [0,1] (same as your original)
         c_min = cos_norm.min(dim=1, keepdim=True).values
         c_max = cos_norm.max(dim=1, keepdim=True).values
-        cos_stretched = (cos_norm - c_min) / (c_max - c_min + 1e-18)
+        cos_stretched = (cos_norm - c_min) / (c_max - c_min + 1e-18)   # (B,K)
 
-        d2 = (diffs * diffs).sum(dim=-1)
-        d = torch.sqrt(d2 + 1e-18)
-        sigma = d.median(dim=1, keepdim=True).values
-        gauss = torch.exp(-d2 / (2 * sigma * sigma + 1e-18))
-        gauss_norm = gauss / (gauss.max(dim=1, keepdim=True).values + 1e-18)
+        # --- distance kernel ---
+        d2 = (diffs * diffs).sum(dim=-1)                               # (B,K)
+        d  = torch.sqrt(d2 + 1e-18)
 
-        score = cos_stretched * gauss_norm
+        sigma = d.median(dim=1, keepdim=True).values.clamp_min(1e-12)  # (B,1)
+        gauss_K = torch.exp(-d2 / (2.0 * sigma * sigma + 1e-18))       # (B,K)
+        g_max = gauss_K.max(dim=1, keepdim=True).values
+        gauss_norm = gauss_K / (g_max + 1e-18)                         # (B,K) in (0,1]
+
+        # --- final base score (bounded, stable) ---
+        score = cos_stretched * gauss_norm                              # (B,K) in [0,1]
+
         q = torch.softmax(score / max(tau_q, 1e-6), dim=1)
-
-        mu = torch.einsum("bk,bkd->bd", q, z_n)
-        mu_targets[:, t] = mu
-
         nxt = _sample_from_q_top_p(q, nbrs, top_p=top_p)
         paths[:, t] = nxt
+        target = z_all[nxt]                             # (B,D)
+        mu_targets[:, t] = target
         curr = nxt
 
     return mu_targets, paths
 
+import math, time
+from pathlib import Path
+from typing import Optional, Union, Dict, Any
+import numpy as np
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+from itertools import cycle
+
+import math, time
+from pathlib import Path
+from typing import Optional, Union, Dict, Any
+from itertools import cycle
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+
+
 def train_model(
     model: 'VAPOR',
     dataset: 'AnnDataDataset',
-    config: Optional[Union[VAPORConfig, Dict[str, Any]]] = None,
+    config: Optional[Union['VAPORConfig', Dict[str, Any]]] = None,
     split_train_test: bool = True,
     test_size: float = 0.2,
-    eval_each_epoch: bool = True,
     save_dir: Optional[Union[str, Path]] = None,
     exp_name: str = "run_fullgraph",
     verbose: bool = True,
     graph_k: Optional[int] = None,
-    graph_update_every: int = 5,
+    graph_update_every_steps: int = 50,
     graph_build_batch_size: int = 2048,
     graph_use_mu: bool = False,
     soft_tau_q: float = 0.3,
     soft_top_p: float = 0.7,
     cos_threshold: float = 0.0,
+    # optional knobs
+    prior_weight: float = 1.0,          # 0.0 to disable prior
+    traj_weight: float = 1.0,           # trajectory loss weight
+    viz_every_steps: int = 0,           # 0 disables
+    log_every: Optional[int] = None,    # default falls back to config.log_every or 50
+    save_every_steps: Optional[int] = None,  # default falls back to config.save_every_steps or 500
     **kwargs
 ) -> 'VAPOR':
-    """Train VAPOR using a full-data (global) kNN graph, with both hard and soft targets.
-    - Keeps your existing optimizer split (VAE vs transport op), horizons sampling, total_steps logic.
-    - Adds: global graph cache updated every N epochs; logs hard-vs-soft diagnostics; optional visualization.
-    """
 
     # ---------- config ----------
     if config is None:
@@ -247,82 +274,74 @@ def train_model(
     elif isinstance(config, dict):
         config = VAPORConfig(**config)
 
-    if kwargs:
-        for key, value in kwargs.items():
-            if hasattr(config, key):
-                setattr(config, key, value)
-            else:
-                print(f"Warning: Unknown parameter '{key}' ignored")
+    for k, v in kwargs.items():
+        if hasattr(config, k):
+            setattr(config, k, v)
+        else:
+            print(f"Warning: Unknown parameter '{k}' ignored")
 
     # ---------- device ----------
     device = resolve_device(config)
     config.device = device
-    model.to(config.device)
+    model.to(device)
 
-    # ---------- DataLoader / split ----------
-    use_grouped = config.by_batch and (getattr(dataset, "batch_ids", None) is not None)
-
+    # ---------- split ----------
     if split_train_test:
         n = len(dataset)
         n_test = max(1, int(round(n * test_size)))
         n_train = n - n_test
         g = torch.Generator().manual_seed(42)
         train_subset, test_subset = torch.utils.data.random_split(dataset, [n_train, n_test], generator=g)
-        print(f"Train / Test split: train={n_train}, test={n_test} (test_size={test_size})")
-        train_base = train_subset
-        test_base = test_subset
+        train_base, test_base = train_subset, test_subset
+        if verbose:
+            print(f"Train / Test split: train={n_train}, test={n_test} (test_size={test_size})")
     else:
-        train_base = dataset
-        test_base = None
+        train_base, test_base = dataset, None
 
     train_dataset = _WithIndex(train_base)
     test_dataset = _WithIndex(test_base) if test_base is not None else None
 
-    if use_grouped and hasattr(dataset, "batch_ids") and dataset.batch_ids is not None:
-        # keep your existing grouped sampler logic if present (currently same loader as else)
-        train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True, drop_last=True)
-        test_loader = DataLoader(test_dataset, batch_size=config.batch_size, shuffle=False) if test_dataset is not None else None
-    else:
-        train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True, drop_last=True)
-        test_loader = DataLoader(test_dataset, batch_size=config.batch_size, shuffle=False) if test_dataset is not None else None
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config.batch_size,
+        shuffle=True,
+        drop_last=True,
+        num_workers=getattr(config, "num_workers", 0),
+        pin_memory=getattr(config, "pin_memory", False),
+    )
+    test_loader = None
+    if test_dataset is not None:
+        test_loader = DataLoader(
+            test_dataset,
+            batch_size=config.batch_size,
+            shuffle=False,
+            drop_last=False,
+            num_workers=getattr(config, "num_workers", 0),
+            pin_memory=getattr(config, "pin_memory", False),
+        )
 
-    # ---------- optimizers split ----------
+    # ---------- optimizer split ----------
     vae_params = [p for n, p in model.named_parameters() if n.startswith("vae.")]
     other_params = [p for n, p in model.named_parameters() if not n.startswith("vae.")]
-    vae_ids = {id(p) for p in vae_params}
-    other_ids = {id(p) for p in other_params}
-    print("overlap params:", len(vae_ids & other_ids))
-    assert len(vae_ids & other_ids) == 0
+    assert len({id(p) for p in vae_params} & {id(p) for p in other_params}) == 0
 
-    vae_scale = model.vae.latent_dim / model.vae.input_dim
-    base_lr_vae = vae_scale * config.lr
-    base_lr_to  = config.lr
+    vae_scale = float(model.vae.latent_dim) / float(model.vae.input_dim)
+    base_lr_vae = vae_scale * float(config.lr)
+    base_lr_to  = float(config.lr)
 
     opt_vae = torch.optim.AdamW(vae_params, lr=base_lr_vae)
     opt_to  = torch.optim.AdamW(other_params, lr=base_lr_to)
 
-    # ---------- steps / epochs ----------
-    N_train = len(train_dataset)
-    steps_per_epoch = math.ceil(N_train / config.batch_size)
+    # ---------- step schedule ----------
     total_steps = int(config.total_steps)
     s1 = int(0.10 * total_steps)   # VAE-only
-    s2 = int(0.20 * total_steps)   # ramp transport
-    epochs = max(1, math.ceil(total_steps / steps_per_epoch))
-    print(f"Training (full-graph) for {epochs} epochs | batch={config.batch_size} | steps/epoch={steps_per_epoch}")
-    global_step = 0
+    s2 = int(0.20 * total_steps)   # ramp
+    if verbose:
+        print(f"Training (step-based) | batch={config.batch_size} | total_steps={total_steps}")
 
-    # ---------- history ----------
-    history = {
-        "epoch": [],
-        "time": [],
-        "train_mse": [],
-        "train_kld": [],
-        "train_traj": [],
-        "train_prior": [],
-        "train_psi": [],
-        "test_mse": [],
-        "test_kld": [],
-    }
+    # ---------- logging controls ----------
+    log_every = int(log_every or getattr(config, "log_every", 50) or 50)
+    save_every_steps = int(save_every_steps or getattr(config, "save_every_steps", 500) or 500)
 
     # ---------- global graph cache ----------
     K = int(graph_k or getattr(config, "graph_k", 50) or 50)
@@ -333,174 +352,122 @@ def train_model(
     z_all_dev = None
     v_all = None
     nbr_idx_global = None
-    emb_all_2d = None
 
-    def _refresh_global_graph(epoch: int):
-        nonlocal z_all_cpu, z_all_dev, v_all, nbr_idx_global, emb_all_2d
-        print(f"[Graph] Refreshing global kNN graph at epoch {epoch} (K={K}) ...")
-        z_all_cpu = _encode_all_z(model, dataset, device=config.device,
-                                 batch_size=graph_build_batch_size, use_mu=graph_use_mu)
-        z_all_dev = z_all_cpu.to(config.device)
+    @torch.no_grad()
+    def _refresh_global_graph(step: int):
+        nonlocal z_all_cpu, z_all_dev, v_all, nbr_idx_global
+        # if verbose:
+            # print(f"[Graph] Refreshing global kNN graph at step {step} (K={K}) ...")
+        z_all_cpu = _encode_all_z(
+            model, dataset, device=device,
+            batch_size=graph_build_batch_size,
+            use_mu=graph_use_mu,
+        )  # CPU float32 (N,D)
+        z_all_dev = z_all_cpu.to(device, non_blocking=True)  # cache on device ONCE per refresh
         nbr_idx_cpu, _ = _build_global_knn_graph_sklearn(z_all_cpu, K=K)
-        nbr_idx_global = nbr_idx_cpu.to(config.device)
+        nbr_idx_global = nbr_idx_cpu.to(device, non_blocking=True)
         v_all = model.compute_velocities(z_all_dev).detach()
-        try:
-            from sklearn.decomposition import PCA
-            emb_all_2d = PCA(n_components=2, random_state=0).fit_transform(z_all_cpu.numpy()).astype(np.float32)
-        except Exception as e:
-            emb_all_2d = None
-            print(f"[Graph] PCA embedding failed: {repr(e)}")
-        print(f"[Graph] Done. z_all shape={tuple(z_all_cpu.shape)}, nbr_idx shape={tuple(nbr_idx_global.shape)}")
+        # if verbose:
+            # print(f"[Graph] Done. z_all={tuple(z_all_cpu.shape)}, nbr_idx={tuple(nbr_idx_global.shape)}")
 
-    _refresh_global_graph(epoch=0)
+    _refresh_global_graph(step=0)
 
-    # ---------- update-based balancing controller (AdamW-aware) ----------
-    @torch.no_grad()
-    def _snap_params(params):
-        return [p.detach().clone() for p in params if p.requires_grad]
+    # ---------- dataset flags ----------
+    has_spatial = bool(getattr(dataset, "has_spatial", False))
+    has_batch = bool(getattr(dataset, "has_batch", False))
 
-    @torch.no_grad()
-    def _median_rel_update(params, params_old, eps: float = 1e-12):
-        vals = []
-        j = 0
-        for p in params:
-            if not p.requires_grad:
-                continue
-            dp = p.detach() - params_old[j]
-            denom = p.detach().abs().mean().item() + eps
-            vals.append(dp.abs().mean().item() / denom)
-            j += 1
-        return float(np.median(vals)) if vals else 0.0
+    # infinite loader (reshuffle happens each epoch because loader is recreated each pass internally)
+    loader_iter = cycle(train_loader)
 
-    # multipliers that will be adapted
-    vae_mult = 1.0
-    to_mult  = 1.0
+    # ---------- step history (for CSV) ----------
+    step_rows = []
+    if save_dir is not None:
+        save_dir = Path(save_dir)
+        (save_dir / "csv").mkdir(parents=True, exist_ok=True)
 
-    # soft bounds
-    vae_mult_min, vae_mult_max = 0.5, 2.0
-    to_mult_min,  to_mult_max  = 0.3, 3.0
+    # ---------- window logging ----------
+    win = dict(mse=0.0, kld=0.0, traj=0.0, prior=0.0, n=0)
 
-    adapt_every = 25
-    ema_beta = 0.9
-    u_ratio_ema = 1.0
+    t_start = time.time()
+    model.train()
 
-    # --- auto-calibration of target_u_ratio ---
-    target_u_ratio = None          # will be set automatically
-    calib_steps = 100              # number of FULL steps for calibration
-    calib_buf = []                 # store u_ratio samples during calibration
+    for global_step in range(total_steps):
+        batch = next(loader_iter)
 
-    # --- controller knobs ---
-    deadband = 0.15                # ±15% around target: no action
-    max_step_to  = 0.05            # to_mult per update (log-space)
-    max_step_vae = 0.03            # vae_mult per update (log-space)
+        # phase
+        if global_step < s1:
+            phase = "vae_only"
+        elif global_step < s2:
+            phase = "ramp_transport"
+        else:
+            phase = "full"
+        is_warmup = (phase == "vae_only")
 
-    # --- base_lr_to auto-rescale (for robustness across datasets) ---
-    base_to_scale = 1.0            # multiplies base_lr_to effectively
-    rescale_patience = 8           # how many adapt events stuck at bounds before rescaling
-    stuck_count = 0
-    rescale_step = 0.2             # change base_to_scale by exp(±0.2) ≈ x1.22
-    base_to_scale_min, base_to_scale_max = 0.1, 10.0
+        # refresh global graph
+        if graph_update_every_steps > 0 and (global_step % graph_update_every_steps == 0) and global_step != 0 and (not is_warmup):
+            _refresh_global_graph(step=global_step)
 
-    eps = 1e-12
+        # unpack + idx_global
+        idx_global = torch.as_tensor(batch[-1], device=device, dtype=torch.long)
 
-    # ---------- training ----------
-    print("\nStarting training...\n" + "-" * 80)
-    has_spatial = getattr(dataset, "has_spatial", False)
-    has_batch = getattr(dataset, "has_batch", False)
+        if has_spatial and has_batch:
+            x, t_data, is_root, is_term, coords, batch_id = batch[:-1]
+        elif has_spatial and (not has_batch):
+            x, t_data, is_root, is_term, coords = batch[:-1]
+            batch_id = None
+        elif (not has_spatial) and has_batch:
+            x, t_data, is_root, is_term, batch_id = batch[:-1]
+            coords = None
+        else:
+            x, t_data, is_root, is_term = batch[:-1]
+            coords = None
+            batch_id = None
 
-    for epoch in range(1, epochs + 1):
-        if global_step >= total_steps:
-            break
+        x = x.to(device, non_blocking=True)
+        t_data = t_data.to(device, non_blocking=True)
+        is_root = torch.as_tensor(is_root, device=device, dtype=torch.bool)
+        is_term = torch.as_tensor(is_term, device=device, dtype=torch.bool)
 
-        epoch_start = time.time()
-        model.train()
+        # -------- forward VAE --------
+        recon, z0, mu0, logvar0 = model.encode(x)
+        recon_loss = F.mse_loss(recon, x)
+        kl_loss = (-0.5 * (1 + logvar0 - mu0.pow(2) - logvar0.exp())).mean()
+        vae_loss = recon_loss + float(config.beta) * kl_loss
 
-        epoch_metrics = dict(mse=0.0, kld=0.0, traj=0.0, prior=0.0, psi=0.0, loss_hard=0.0, loss_soft=0.0)
-        batch_count = 0
+        traj_loss = torch.zeros((), device=device)
+        prior_loss = torch.zeros((), device=device)
 
-        horizons = torch.randperm(config.t_max, device=config.device).add_(1).tolist()
+        # -------- transport losses --------
+        if not is_warmup:
+            t_rand = int(torch.randint(1, int(config.t_max) + 1, (1,), device=device).item())
+            t_span = torch.linspace(0, t_rand, t_rand + 1, device=device)
+            z_traj = model.integrate(z0, t_span)
 
-        if graph_update_every > 0 and (epoch % graph_update_every) == 0:
-            _refresh_global_graph(epoch=epoch)
+            mu_targets, _, = _build_directed_soft_targets_avgv_global(
+                z_all=z_all_dev,
+                v_all=v_all,
+                nbr_idx_global=nbr_idx_global,
+                T=z_traj.size(0),
+                idx0=idx_global,
+                tau_q=soft_tau_q,
+                top_p=soft_top_p,
+                cos_threshold=cos_threshold,
+            )
 
-        for batch_idx, batch in enumerate(train_loader):
-            if global_step >= total_steps:
-                break
+            if z_traj.size(0) > 1:
+                traj_loss = torch.stack(
+                    [F.mse_loss(z_traj[t], mu_targets[:, t]) for t in range(1, z_traj.size(0))]
+                ).mean()
 
-            # -------- phase (based on global_step) --------
-            if global_step < s1:
-                phase = "vae_only"
-            elif global_step < s2:
-                phase = "ramp_transport"
-            else:
-                phase = "full"
-
-            is_warmup = (phase == "vae_only")
-
-            # unpack + idx_global (last item)
-            idx_global = torch.as_tensor(batch[-1], device=config.device, dtype=torch.long)
-
-            if has_spatial and has_batch:
-                x, t_data, is_root, is_term, coords, batch_id = batch[:-1]
-            elif has_spatial and (not has_batch):
-                x, t_data, is_root, is_term, coords = batch[:-1]
-                batch_id = None
-            elif (not has_spatial) and has_batch:
-                x, t_data, is_root, is_term, batch_id = batch[:-1]
-                coords = None
-            else:
-                x, t_data, is_root, is_term = batch[:-1]
-                coords = None
-                batch_id = None
-
-            x = x.to(config.device)
-            t_data = t_data.to(config.device)
-            is_root = torch.as_tensor(is_root, device=config.device, dtype=torch.bool)
-            is_term = torch.as_tensor(is_term, device=config.device, dtype=torch.bool)
-            if coords is not None:
-                coords = coords.to(config.device)
-
-            # -------- forward (VAE) --------
-            recon, z0, mu0, logvar0 = model.encode(x)
-            recon_loss = F.mse_loss(recon, x)
-            kl_loss = (-0.5 * (1 + logvar0 - mu0.pow(2) - logvar0.exp())).mean()
-            vae_loss = recon_loss + config.beta * kl_loss
-
-            traj_loss_soft = torch.tensor(0.0, device=config.device)
-            prior_loss = torch.tensor(0.0, device=config.device)
-            loss_transport = torch.tensor(0.0, device=config.device)
-
-            # -------- build transport losses if not warmup --------
-            if not is_warmup:
-                t_rand = horizons[batch_idx % config.t_max]
-                t_span = torch.linspace(0, t_rand, t_rand + 1, device=config.device)
-                z_traj = model.integrate(z0, t_span)
-
-                mu_targets, paths_soft = _build_directed_soft_targets_avgv_global(
-                    z_all=z_all_dev,
-                    v_all=v_all,
-                    nbr_idx_global=nbr_idx_global,
-                    T=z_traj.size(0),
-                    idx0=idx_global,
-                    cos_threshold=cos_threshold,
-                    tau_q=soft_tau_q,
-                    top_p=soft_top_p,
-                )
-
-                if z_traj.size(0) > 1:
-                    traj_loss_soft = torch.stack(
-                        [F.mse_loss(z_traj[t], mu_targets[:, t]) for t in range(1, z_traj.size(0))]
-                    ).mean()
-
-                # prior graph (batch-local)
+            if prior_weight != 0.0:
                 B = z0.size(0)
                 if B >= 2:
-                    z0_for_prior = z0  # keep gradients; change to z0.detach() if desired
+                    z0_for_prior = z0  # or z0.detach()
                     v0 = model.compute_velocities(z0_for_prior)
                     k_eff = min(K, B - 1)
                     dists = torch.cdist(z0_for_prior, z0_for_prior)
-                    eps_batch = torch.median(dists.topk(k_eff, dim=1, largest=False).values[:, -1]).item()
-
+                    knn_last = dists.topk(k_eff, dim=1, largest=False).values[:, -1]
+                    eps_batch = torch.median(knn_last).item()
                     adj_idx_b, adj_mask_b = model.build_radius_graph(
                         z0_for_prior,
                         eps_batch,
@@ -511,212 +478,145 @@ def train_model(
                         z0_for_prior, v0, is_root, is_term, adj_idx_b, adj_mask_b
                     )
 
-                # schedule multipliers
-                if phase == "ramp_transport":
-                    r = (global_step - s1) / max(s2 - s1, 1)
-                    r = float(max(0.0, min(1.0, r)))
-                    sched_to = r
-                    w_traj = r
-                    w_prior = r
-                else:
-                    sched_to = 1.0
-                    w_traj = 1.0
-                    w_prior = 1.0
+        # ramp schedule
+        if phase == "ramp_transport":
+            r = (global_step - s1) / max(s2 - s1, 1)
+            r = float(max(0.0, min(1.0, r)))
+            w_traj = traj_weight * r
+            w_prior = prior_weight * r
+            lr_to = base_lr_to * r
+        elif phase == "full":
+            w_traj = traj_weight
+            w_prior = prior_weight
+            lr_to = base_lr_to
+        else:
+            w_traj = 0.0
+            w_prior = 0.0
+            lr_to = 0.0
 
-                loss_transport = w_traj * traj_loss_soft + w_prior * prior_loss
-            else:
-                sched_to = 0.0
+        loss_transport = w_traj * traj_loss + w_prior * prior_loss
+        loss = vae_loss + loss_transport
 
-            # -------- set LRs for this step (ramp fixed to_mult=1) --------
-            set_optimizer_lr(opt_vae, base_lr_vae * vae_mult)
-            to_mult_eff = to_mult if phase == "full" else 1.0
-            set_optimizer_lr(opt_to,  base_lr_to  * sched_to * to_mult_eff)
+        # -------- backward + step --------
+        opt_vae.zero_grad(set_to_none=True)
+        opt_to.zero_grad(set_to_none=True)
 
-            if verbose and (global_step % adapt_every == 0):
-                print(f"[LR] lr_vae={get_optimizer_lr(opt_vae):.2e} lr_to={get_optimizer_lr(opt_to):.2e} (sched_to={sched_to:.3f})")
+        for pg in opt_vae.param_groups:
+            pg["lr"] = base_lr_vae
+        for pg in opt_to.param_groups:
+            pg["lr"] = lr_to
 
-            # -------- backward --------
-            opt_vae.zero_grad(set_to_none=True)
-            opt_to.zero_grad(set_to_none=True)
+        loss.backward()
 
-            loss = vae_loss + loss_transport
-            loss.backward()
+        try:
+            torch.nn.utils.clip_grad_norm_(model.transport_op.parameters(), max_norm=float(config.grad_clip))
+        except Exception:
+            pass
 
-            # clip transport gradients (if exists)
-            try:
-                torch.nn.utils.clip_grad_norm_(model.transport_op.parameters(), max_norm=config.grad_clip)
-            except Exception:
-                pass
+        opt_vae.step()
+        if not is_warmup:
+            opt_to.step()
 
-            # -------- update-based adaptation snapshots (only full) --------
-            do_adapt = (phase == "full") and (global_step % adapt_every == 0)
+        # -------- window logging --------
+        win["mse"] += float(recon_loss.item())
+        win["kld"] += float(kl_loss.item())
+        win["traj"] += float(traj_loss.item()) if not is_warmup else 0.0
+        win["prior"] += float(prior_loss.item()) if (not is_warmup and prior_weight != 0.0) else 0.0
+        win["n"] += 1
 
-            if do_adapt:
-                vae_old = _snap_params(vae_params)
-                to_old  = _snap_params(other_params)
-
-            opt_vae.step()
-            if not is_warmup:
-                opt_to.step()
-
-            if do_adapt:
-                u_vae = _median_rel_update(vae_params, vae_old)
-                u_to  = _median_rel_update(other_params, to_old)
-                u_ratio = u_vae / (u_to + eps)    # <1 means TO updating more than VAE
-
-                # EMA of observed ratio
-                u_ratio_ema = ema_beta * u_ratio_ema + (1 - ema_beta) * u_ratio
-
-                # -------- 1) auto-calibration --------
-                # collect samples for first calib_steps full steps
-                if target_u_ratio is None:
-                    calib_buf.append(u_ratio)
-                    if len(calib_buf) >= calib_steps:
-                        # robust target: median (less sensitive than mean)
-                        target_u_ratio = float(np.median(calib_buf))
-                        # safety clamp: don't let target be crazy
-                        target_u_ratio = float(np.clip(target_u_ratio, 0.05, 20.0))
-                        if verbose:
-                            print(f"[CALIB] target_u_ratio set to {target_u_ratio:.3f} from {len(calib_buf)} samples")
-                else:
-                    # optional: very slow drift of target (keeps robust if dynamics change)
-                    drift = 0.01
-                    target_u_ratio = (1 - drift) * target_u_ratio + drift * u_ratio
-
-                # if still calibrating, don't adapt multipliers yet (avoid chasing noise)
-                if target_u_ratio is None:
-                    if verbose:
-                        print(f"[UPD] step={global_step} u_vae={u_vae:.3e} u_to={u_to:.3e} u_ratio={u_ratio:.3f} (calibrating)")
-                else:
-                    # -------- 2) robust deadband control around target --------
-                    # normalized error: >0 means VAE updates too much relative to TO
-                    err = math.log((u_ratio_ema + eps) / (target_u_ratio + eps))
-
-                    # deadband: ignore small fluctuations
-                    if abs(err) < deadband:
-                        step_to = 0.0
-                        step_vae = 0.0
-                    else:
-                        # symmetric control (small steps, clamped)
-                        step_to  = max(-max_step_to,  min(max_step_to,  +0.5 * err))
-                        step_vae = max(-max_step_vae, min(max_step_vae, -0.5 * err))
-
-                    # apply
-                    to_mult  *= math.exp(step_to)
-                    vae_mult *= math.exp(step_vae)
-
-                    # clamp
-                    to_mult  = float(np.clip(to_mult,  to_mult_min,  to_mult_max))
-                    vae_mult = float(np.clip(vae_mult, vae_mult_min, vae_mult_max))
-
-                    # -------- 3) bound-stuck detector -> rescale base_lr_to --------
-                    stuck = (to_mult <= to_mult_min + 1e-9) or (to_mult >= to_mult_max - 1e-9) \
-                        or (vae_mult <= vae_mult_min + 1e-9) or (vae_mult >= vae_mult_max - 1e-9)
-
-                    if stuck and abs(err) >= deadband:
-                        stuck_count += 1
-                    else:
-                        stuck_count = max(0, stuck_count - 1)
-
-                    if stuck_count >= rescale_patience:
-                        # If u_ratio_ema < target => TO too strong => shrink base_to_scale
-                        # If u_ratio_ema > target => TO too weak => grow base_to_scale
-                        direction = -1.0 if (u_ratio_ema < target_u_ratio) else +1.0
-                        base_to_scale *= math.exp(direction * rescale_step)
-                        base_to_scale = float(np.clip(base_to_scale, base_to_scale_min, base_to_scale_max))
-                        stuck_count = 0
-
-            # -------- metrics accumulate --------
-            epoch_metrics["mse"] += float(recon_loss.item())
-            epoch_metrics["kld"] += float(kl_loss.item())
-            epoch_metrics["traj"] += float(traj_loss_soft.item()) if not is_warmup else 0.0
-            epoch_metrics["prior"] += float(prior_loss.item()) if not is_warmup else 0.0
-            epoch_metrics["psi"] += 0.0
-            epoch_metrics["loss_soft"] += float(traj_loss_soft.item()) if not is_warmup else 0.0
-
-            batch_count += 1
-            global_step += 1
-
-        # epoch averages
-        if batch_count > 0:
-            for k in epoch_metrics:
-                epoch_metrics[k] /= batch_count
-
-        history["epoch"].append(epoch)
-        history["time"].append(time.time() - epoch_start)
-        history["train_mse"].append(epoch_metrics["mse"])
-        history["train_kld"].append(epoch_metrics["kld"])
-        history["train_traj"].append(epoch_metrics["traj"])
-        history["train_prior"].append(epoch_metrics["prior"])
-        history["train_psi"].append(epoch_metrics["psi"])
-
-        if verbose:
+        if verbose and (global_step % log_every == 0) and win["n"] > 0:
             print(
-                f"Epoch {epoch}/{epochs} | time {history['time'][-1]:.2f}s | "
-                f"Recon {epoch_metrics['mse']:.4f} | KL {epoch_metrics['kld']:.4f} | "
-                f"TrajSoft {epoch_metrics['traj']:.4f} | Prior {epoch_metrics['prior']:.4f} | phase={phase}"
+                f"Step {global_step:06d}/{total_steps} | phase={phase:<13} | "
+                f"Recon {win['mse']/win['n']:.4f} | KL {win['kld']/win['n']:.4f} | "
+                f"Traj {win['traj']/win['n']:.4f} | Prior {win['prior']/win['n']:.4f} | "
+                f"lr_to {lr_to:.2e}"
             )
+            win = dict(mse=0.0, kld=0.0, traj=0.0, prior=0.0, n=0)
 
-        if save_dir is not None:
-            try:
-                _save_epoch_csv_and_plots(history, Path(save_dir), exp_name=exp_name)
-            except Exception:
-                pass
+        # -------- save step csv --------
+        if (save_dir is not None) and (global_step % save_every_steps == 0):
+            row = dict(
+                step=global_step,
+                phase=phase,
+                recon=float(recon_loss.item()),
+                kl=float(kl_loss.item()),
+                traj=float(traj_loss.item()) if not is_warmup else 0.0,
+                prior=float(prior_loss.item()) if not is_warmup else 0.0,
+                lr_vae=float(base_lr_vae),
+                lr_to=float(lr_to),
+            )
+            step_rows.append(row)
+            df = pd.DataFrame(step_rows)
+            df.to_csv(save_dir / "csv" / f"{exp_name}_step_metrics.csv", index=False)
 
-    print("-" * 80)
-    print("Training completed (full-graph)!")
+        # -------- optional viz hook --------
+        if (viz_every_steps > 0) and (global_step % viz_every_steps == 0) and (save_dir is not None) and (not is_warmup):
+            pass
 
-    _plot_training_metrics({
-        "mse_losses": history["train_mse"],
-        "kld_losses": history["train_kld"],
-        "traj_losses": history["train_traj"],
-        "prior_losses": history["train_prior"],
-        "psi_losses": history["train_psi"],
-    })
+    if verbose:
+        print("-" * 80)
+        print(f"Training completed. total_time={time.time()-t_start:.2f}s")
+
+    plot_losses(
+    f"{save_dir}/csv/{exp_name}_step_metrics.csv",
+    out_path="logs/figs/losses.png",
+    use_ema=True,
+    ema_alpha=0.98,
+)
 
     return model
 
+def ema(x, alpha=0.98):
+    """Exponential moving average."""
+    y = np.zeros_like(x, dtype=float)
+    y[0] = x[0]
+    for i in range(1, len(x)):
+        y[i] = alpha * y[i-1] + (1 - alpha) * x[i]
+    return y
 
-def _plot_training_metrics(metrics: Dict[str, List[float]], has_supervision: bool = False):
-    """Plot training loss curves in separate clean axes."""
-    epochs = list(range(1, len(metrics['mse_losses']) + 1))
-    
-    # Adjust subplot layout based on supervision
-    if has_supervision:
-        fig, axes = plt.subplots(1, 4, figsize=(20, 4))
-    else:
-        fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-    
-    # VAE losses
-    axes[0].plot(epochs, metrics['mse_losses'], label='Reconstruction')
-    axes[0].plot(epochs, metrics['kld_losses'], label='KL Divergence')
-    axes[0].set_xlabel('Epoch')
-    axes[0].set_ylabel('Loss')
-    axes[0].set_title('VAE Losses')
-    axes[0].legend()
-    axes[0].grid(True, alpha=0.3)
-    
-    # Transport losses
-    axes[1].plot(epochs, metrics['traj_losses'], label='Trajectory')
-    axes[1].plot(epochs, metrics['prior_losses'], label='Prior')
-    axes[1].plot(epochs, metrics['psi_losses'], label='Psi')
-    axes[1].set_xlabel('Epoch')
-    axes[1].set_ylabel('Loss')
-    axes[1].set_title('Transport Losses')
-    axes[1].legend()
-    axes[1].grid(True, alpha=0.3)
-    
-    # Total losses
-    total_vae = [mse + kld for mse, kld in zip(metrics['mse_losses'], metrics['kld_losses'])]
-    total_transport = [traj + prior + psi for traj, prior, psi in 
-                      zip(metrics['traj_losses'], metrics['prior_losses'], metrics['psi_losses'])]
-    axes[2].plot(epochs, total_vae, label='Total VAE')
-    axes[2].plot(epochs, total_transport, label='Total Transport')
-    axes[2].set_xlabel('Epoch')
-    axes[2].set_ylabel('Loss')
-    axes[2].set_title('Total Losses')
-    axes[2].legend()
-    axes[2].grid(True, alpha=0.3)
-    
+def plot_losses(
+    csv_path,
+    out_path=None,
+    use_ema=True,
+    ema_alpha=0.98,
+    logy=False,
+    figsize=(8, 5),
+):
+    df = pd.read_csv(csv_path)
+
+    step = df["step"].values
+
+    losses = {
+        "Recon": df["recon"].values,
+        "KL": df["kl"].values,
+    }
+
+    if "traj" in df.columns:
+        losses["Traj"] = df["traj"].values
+    if "prior" in df.columns:
+        losses["Prior"] = df["prior"].values
+
+    plt.figure(figsize=figsize)
+
+    for name, y in losses.items():
+        if use_ema:
+            y_plot = ema(y, ema_alpha)
+            plt.plot(step, y_plot, label=f"{name} (EMA)")
+        else:
+            plt.plot(step, y, alpha=0.4, label=name)
+
+    plt.xlabel("Step")
+    plt.ylabel("Loss")
+    if logy:
+        plt.yscale("log")
+
+    plt.legend()
     plt.tight_layout()
+
+    if out_path is not None:
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(out_path, dpi=200)
+        print(f"[saved] {out_path}")
+
     plt.show()
