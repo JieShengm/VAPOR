@@ -21,4 +21,5 @@ build/
 data/GBM/
 data/*.h5ad
 cache/
+examples/
 *.pptx

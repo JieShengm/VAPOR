@@ -23,7 +23,7 @@ class VAPORConfig:
 
     # Graph / path (TCL)
     eps_z_k: int = 30          # estimate eps_z using the k-th nearest neighbor
-    graph_k: int = 20          # maximum number of neighbors kept per node (top-k)
+    graph_k: int = 50          # maximum number of neighbors kept per node (top-k)
     min_samples: int = 5       # minimum number of neighbors required; otherwise treated as noise
 
     # Spatial (optional)
