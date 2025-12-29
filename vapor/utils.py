@@ -305,7 +305,7 @@ def lr_finder_vapor(
             print(f"[LR Finder] step {step:4d} | lr={lr:.2e} | smoothed_loss={smoothed:.4g}")
 
     # ---- recommend ----
-    best_lr = lr_at_diverge / 20.0 if diverged else lr_at_min_loss / 20.0
+    best_lr = lr_at_diverge / 10.0 if diverged else lr_at_min_loss / 10.0
 
     # ---- restore model ----
     model.load_state_dict(model_state)
@@ -327,7 +327,7 @@ def lr_finder_vapor(
         print("\n[LR Finder] Done.")
         print(f"  lr_at_min_loss = {lr_at_min_loss:.2e}")
         print(f"  lr_at_diverge  = {lr_at_diverge:.2e} (diverged={diverged})")
-        print(f"  suggested base_lr ≈ {best_lr:.2e}  (rule: diverge/20)")
+        print(f"  suggested base_lr ≈ {best_lr:.2e}  (rule: diverge/10)")
 
     res = LRFindResult(
         lrs=lrs,
