@@ -372,6 +372,55 @@ def train_model(
 
     _refresh_global_graph(step=0)
 
+        # ---------- update-based balancing controller (AdamW-aware) ----------
+    @torch.no_grad()
+    def _snap_params(params):
+        return [p.detach().clone() for p in params if p.requires_grad]
+
+    @torch.no_grad()
+    def _median_rel_update(params, params_old, eps: float = 1e-12):
+        vals = []
+        j = 0
+        for p in params:
+            if not p.requires_grad:
+                continue
+            dp = p.detach() - params_old[j]
+            denom = p.detach().abs().mean().item() + eps
+            vals.append(dp.abs().mean().item() / denom)
+            j += 1
+        return float(np.median(vals)) if vals else 0.0
+
+    # multipliers that will be adapted
+    vae_mult = 1.0
+    to_mult  = 1.0
+
+    # soft bounds
+    vae_mult_min, vae_mult_max = 0.5, 2.0
+    to_mult_min,  to_mult_max  = 0.3, 3.0
+
+    adapt_every = 25
+    ema_beta = 0.9
+    u_ratio_ema = 1.0
+
+    # --- auto-calibration of target_u_ratio ---
+    target_u_ratio = None          # will be set automatically
+    calib_steps = 100              # number of FULL steps for calibration
+    calib_buf = []                 # store u_ratio samples during calibration
+
+    # --- controller knobs ---
+    deadband = 0.15                # ±15% around target: no action
+    max_step_to  = 0.05            # to_mult per update (log-space)
+    max_step_vae = 0.03            # vae_mult per update (log-space)
+
+    # --- base_lr_to auto-rescale (for robustness across datasets) ---
+    base_to_scale = 1.0            # multiplies base_lr_to effectively
+    rescale_patience = 8           # how many adapt events stuck at bounds before rescaling
+    stuck_count = 0
+    rescale_step = 0.2             # change base_to_scale by exp(±0.2) ≈ x1.22
+    base_to_scale_min, base_to_scale_max = 0.1, 10.0
+
+    eps = 1e-12
+
     # ---------- dataset flags ----------
     has_spatial = bool(getattr(dataset, "has_spatial", False))
     has_batch = bool(getattr(dataset, "has_batch", False))
@@ -443,8 +492,9 @@ def train_model(
         kl_loss = (-0.5 * (1 + logvar0 - mu0.pow(2) - logvar0.exp())).mean()
         vae_loss = recon_loss + float(config.beta) * kl_loss
 
-        traj_loss = torch.zeros((), device=device)
-        prior_loss = torch.zeros((), device=device)
+        traj_loss = torch.tensor(0.0, device=config.device)
+        prior_loss = torch.tensor(0.0, device=config.device)
+        loss_transport = torch.tensor(0.0, device=config.device)
 
         # -------- transport losses --------
         if not is_warmup:
@@ -487,34 +537,35 @@ def train_model(
                         z0_for_prior, v0, is_root, is_term, adj_idx_b, adj_mask_b
                     )
 
-        # ramp schedule
-        if phase == "ramp_transport":
-            r = (global_step - s1) / max(s2 - s1, 1)
-            r = float(max(0.0, min(1.0, r)))
-            w_traj = traj_weight * r
-            w_prior = prior_weight * r
-            lr_to = base_lr_to * r
-        elif phase == "full":
-            w_traj = traj_weight
-            w_prior = prior_weight
-            lr_to = base_lr_to
+            # schedule multipliers
+            if phase == "ramp_transport":
+                r = (global_step - s1) / max(s2 - s1, 1)
+                r = float(max(0.0, min(1.0, r)))
+                sched_to = r
+                w_traj = r
+                w_prior = r
+            else:
+                sched_to = 1.0
+                w_traj = 1.0
+                w_prior = 1.0
+
+            loss_transport = w_traj * traj_loss + w_prior * prior_loss
         else:
-            w_traj = 0.0
-            w_prior = 0.0
-            lr_to = 0.0
+            sched_to = 0.0
 
-        loss_transport = w_traj * traj_loss + w_prior * prior_loss
-        loss = vae_loss + loss_transport
+        # -------- set LRs for this step (ramp fixed to_mult=1) --------
+        set_optimizer_lr(opt_vae, base_lr_vae * vae_mult)
+        to_mult_eff = to_mult if phase == "full" else 1.0
+        set_optimizer_lr(opt_to,  base_lr_to  * sched_to * to_mult_eff)
 
-        # -------- backward + step --------
+        if verbose and (global_step % adapt_every == 0) and (global_step % log_every == 0):
+            print(f"[LR] lr_vae={get_optimizer_lr(opt_vae):.2e} lr_to={get_optimizer_lr(opt_to):.2e} (sched_to={sched_to:.3f})")
+
+        # -------- backward --------
         opt_vae.zero_grad(set_to_none=True)
         opt_to.zero_grad(set_to_none=True)
 
-        for pg in opt_vae.param_groups:
-            pg["lr"] = base_lr_vae
-        for pg in opt_to.param_groups:
-            pg["lr"] = lr_to
-
+        loss = vae_loss + loss_transport
         loss.backward()
 
         try:
@@ -522,9 +573,83 @@ def train_model(
         except Exception:
             pass
 
+        # -------- update-based adaptation snapshots (only full) --------
+        do_adapt = (phase == "full") and (global_step % adapt_every == 0)
+
+        if do_adapt:
+            vae_old = _snap_params(vae_params)
+            to_old  = _snap_params(other_params)
+
         opt_vae.step()
         if not is_warmup:
             opt_to.step()
+
+        if do_adapt:
+            u_vae = _median_rel_update(vae_params, vae_old)
+            u_to  = _median_rel_update(other_params, to_old)
+            u_ratio = u_vae / (u_to + eps)    # <1 means TO updating more than VAE
+
+            # EMA of observed ratio
+            u_ratio_ema = ema_beta * u_ratio_ema + (1 - ema_beta) * u_ratio
+
+            # -------- 1) auto-calibration --------
+            # collect samples for first calib_steps full steps
+            if target_u_ratio is None:
+                calib_buf.append(u_ratio)
+                if len(calib_buf) >= calib_steps:
+                    # robust target: median (less sensitive than mean)
+                    target_u_ratio = float(np.median(calib_buf))
+                    # safety clamp: don't let target be crazy
+                    target_u_ratio = float(np.clip(target_u_ratio, 0.05, 20.0))
+                    if verbose and (global_step % log_every == 0):
+                        print(f"[CALIB] target_u_ratio set to {target_u_ratio:.3f} from {len(calib_buf)} samples")
+            else:
+                # optional: very slow drift of target (keeps robust if dynamics change)
+                drift = 0.01
+                target_u_ratio = (1 - drift) * target_u_ratio + drift * u_ratio
+
+            # if still calibrating, don't adapt multipliers yet (avoid chasing noise)
+            if target_u_ratio is None:
+                if verbose and (global_step % log_every == 0):
+                    print(f"[UPD] step={global_step} u_vae={u_vae:.3e} u_to={u_to:.3e} u_ratio={u_ratio:.3f} (calibrating)")
+            else:
+                # -------- 2) robust deadband control around target --------
+                # normalized error: >0 means VAE updates too much relative to TO
+                err = math.log((u_ratio_ema + eps) / (target_u_ratio + eps))
+
+                # deadband: ignore small fluctuations
+                if abs(err) < deadband:
+                    step_to = 0.0
+                    step_vae = 0.0
+                else:
+                    # symmetric control (small steps, clamped)
+                    step_to  = max(-max_step_to,  min(max_step_to,  +0.5 * err))
+                    step_vae = max(-max_step_vae, min(max_step_vae, -0.5 * err))
+
+                # apply
+                to_mult  *= math.exp(step_to)
+                vae_mult *= math.exp(step_vae)
+
+                # clamp
+                to_mult  = float(np.clip(to_mult,  to_mult_min,  to_mult_max))
+                vae_mult = float(np.clip(vae_mult, vae_mult_min, vae_mult_max))
+
+                # -------- 3) bound-stuck detector -> rescale base_lr_to --------
+                stuck = (to_mult <= to_mult_min + 1e-9) or (to_mult >= to_mult_max - 1e-9) \
+                    or (vae_mult <= vae_mult_min + 1e-9) or (vae_mult >= vae_mult_max - 1e-9)
+
+                if stuck and abs(err) >= deadband:
+                    stuck_count += 1
+                else:
+                    stuck_count = max(0, stuck_count - 1)
+
+                if stuck_count >= rescale_patience:
+                    # If u_ratio_ema < target => TO too strong => shrink base_to_scale
+                    # If u_ratio_ema > target => TO too weak => grow base_to_scale
+                    direction = -1.0 if (u_ratio_ema < target_u_ratio) else +1.0
+                    base_to_scale *= math.exp(direction * rescale_step)
+                    base_to_scale = float(np.clip(base_to_scale, base_to_scale_min, base_to_scale_max))
+                    stuck_count = 0
 
         # -------- record history (STEP-BASED) --------
         history["step"].append(global_step)
@@ -546,8 +671,7 @@ def train_model(
             print(
                 f"Step {global_step:06d}/{total_steps} | phase={phase:<13} | "
                 f"Recon {win['mse']/win['n']:.4f} | KL {win['kld']/win['n']:.4f} | "
-                f"Traj {win['traj']/win['n']:.4f} | Prior {win['prior']/win['n']:.4f} | "
-                f"lr_to {lr_to:.2e}"
+                f"Traj {win['traj']/win['n']:.4f} | Prior {win['prior']/win['n']:.4f}"
             )
             win = dict(mse=0.0, kld=0.0, traj=0.0, prior=0.0, n=0)
 
@@ -561,7 +685,6 @@ def train_model(
                 traj=float(traj_loss.item()) if not is_warmup else 0.0,
                 prior=float(prior_loss.item()) if not is_warmup else 0.0,
                 lr_vae=float(base_lr_vae),
-                lr_to=float(lr_to),
             )
             step_rows.append(row)
             df = pd.DataFrame(step_rows)
