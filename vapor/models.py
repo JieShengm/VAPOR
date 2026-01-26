@@ -174,7 +174,7 @@ class VAPOR(nn.Module):
         return self.vae(x)
     
     def integrate(self, z0: torch.Tensor, t_span: torch.Tensor):
-        z0_det = z0.detach()
+        z0_det = z0#.detach()
         # reset NFE counter (optional)
         if hasattr(self.transport_op, "nfe"):
             print("Resetting NFE counter to zero.")
