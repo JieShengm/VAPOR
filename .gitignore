@@ -1,25 +1,21 @@
-# Python bytecode
-__pycache__/
-*.py[cod]
-
-# Virtual environments
-.venv/
-vapor-env/
-
-# Packaging artifacts
-*.egg-info/
-dist/
-build/
-
-# Jupyter
-.ipynb_checkpoints/
-
-# OS files
-.DS_Store
-
+<<<<<<< HEAD
 # local data
 data/GBM/
 data/*.h5ad
 cache/
 examples/
 *.pptx
+=======
+# Ignore all H5AD data files
+*.h5ad
+
+# Data directories
+data/
+
+# Ignore the entire examples folder
+examples/
+
+# Generated documents/images
+*.pdf
+*.png
+>>>>>>> f9ccb3f (Update .gitignore to exclude data and examples)
