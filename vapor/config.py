@@ -14,26 +14,13 @@ class VAPORConfig:
     """VAPOR configuration (single source of truth)."""
 
     # Data
-    # adata_file: str = "./data/pasca_development_hvg5k_scaled.h5ad"
-    # save_path: str = "./out/vapor.pth"
-    time_label: Optional[str] = None
+    save_dir: Optional[str] = None
     root_indices: Optional[List[int]] = None
     terminal_indices: Optional[List[int]] = None
     scale: bool = True
 
     # Graph / path (TCL)
-    eps_z_k: int = 30          # estimate eps_z using the k-th nearest neighbor
-    graph_k: int = 20          # maximum number of neighbors kept per node (top-k)
-    min_samples: int = 5       # minimum number of neighbors required; otherwise treated as noise
-
-    # Spatial (optional)
-    spatial_key: Optional[str] = None   # key in adata.obsm (e.g. "spatial"); None => non-spatial mode
-    batch_key: Optional[str] = None     # key in adata.obs for grouping spatial coords (e.g. "batch"); None => all data together
-    by_batch:  bool = True          # whether to group by batch_key during training
-    eps_xy: Optional[float] = None      # spatial radius in z-scored coord space; None => adaptive per-node radius
-    zscore_mode: str = "batch"         # "global" | "batch"
-    expand_factor: float = 1.25         # adaptive spatial radius multiplier
-    eps_cap: Optional[float] = 3.0      # cap adaptive eps_xy_i (z-scored units)
+    graph_k: int = 50
 
     # Model
     latent_dim: int = 64
@@ -42,9 +29,9 @@ class VAPORConfig:
     decoder_dims: List[int] = field(default_factory=lambda: [128, 512, 2048])
 
     # Training
-    total_steps: int = 1750
+    total_steps: int = 25000
     batch_size: int = 512
-    lr: float = 3e-4
+    lr: float = 1e-4
     device: Optional[str] = "cuda"
 
     # Loss weights
@@ -52,7 +39,7 @@ class VAPORConfig:
     alpha: float = 1.0
     gamma: float = 1.0
     eta: float = 1.0
-    tau: float = 0.5
+    gate_temperature: float = 0.5
 
     # Training options
     t_max: int = 5
@@ -60,6 +47,12 @@ class VAPORConfig:
     grad_clip: float = 0.2
     print_freq: int = 1
     plot_losses: bool = True
+    ckpt_every_steps: int = 10000
+    
+    # Reproducibility
+    seed: Optional[int] = None             # None: Random
+    deterministic: bool = False            # cuDNN (slow)
+    seed_split: bool = True                # train/test split
 
     def update(self, **kwargs) -> None:
         for k, v in kwargs.items():

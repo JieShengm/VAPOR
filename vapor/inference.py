@@ -26,41 +26,60 @@ def extract_latents_and_dynamics(
     if hasattr(X, "toarray"):
         X = X.toarray()
     X = np.asarray(X)
-
     if scale:
         X = row_zscore(X)
-
+    
     model = model.eval().to(device)
     x_t = torch.tensor(X, dtype=torch.float32, device=device)
-
-    _, z, *_ = model.vae(x_t)
-
-    # dynamics decomposition
-    Uhat = model.transport_op.unit_directions(z)              
-    g_t = model.transport_op.get_mixture_weights(Uhat)        
-
-
-    adata_vapor = ad.AnnData(np.array(z))
-    adata_vapor.obs = adata.obs
     
-    g_t_seq = g_t.numpy()
-    for i in range(g_t_seq.shape[1]):
-         adata_vapor.obs[f'pw_{i+1}']  = g_t_seq[:,i]
-
-    for i in range(len(model.transport_op.Psi)):
-        adata_vapor.layers[f'v_psi{i+1}'] = np.array(Uhat[:,i,:])
-        
+    # Encode: get mu, logvar
+    mu, logvar = model.vae.encode(x_t)
+    std = (0.5 * logvar).exp()
+    
+    # Single z sample for reference
+    z = mu + std * torch.randn_like(mu)
+    
+    # ===== Dynamics computed on mu (deterministic, for downstream) =====
+    Uhat = model.transport_op.unit_directions(mu)
+    g_t = model.transport_op.get_mixture_weights(Uhat)
     t = torch.zeros(1).to(device)
-    dz = model.transport_op(t, z)
-    adata_vapor.layers[f'v_VAPOR'] = np.array(dz)
+    dz_mu = model.transport_op(t, mu)
     
-    adata_vapor.obsm['X_VAPOR'] = np.array(z)
-    adata_vapor.layers['vapor']=adata_vapor.obsm['X_VAPOR']
-
+    # Build adata with mu as the primary latent
+    print("Using mu as the primary latent (X)")
+    adata_vapor = ad.AnnData(np.array(mu.cpu()))
+    adata_vapor.obs = adata.obs.copy()
+    
+    # Mixture weights (gates) per direction
+    g_t_seq = g_t.cpu().numpy()
+    for i in range(g_t_seq.shape[1]):
+        adata_vapor.obs[f'pw_{i+1}'] = g_t_seq[:, i]
+    
+    # Unit directions per Psi component
+    Uhat_np = Uhat.cpu().numpy()
+    for i in range(len(model.transport_op.Psi)):
+        adata_vapor.layers[f'v_psi{i+1}'] = Uhat_np[:, i, :]
+        
+    # Metadata
     adata_vapor.uns["gene_names"] = adata.var_names.tolist()
     adata_vapor.uns["n_dynamics"] = model.transport_op.n_dynamics
-    if 'X_umap' in adata.obsm and adata.obsm['X_umap'] is not None:
-        adata_vapor.obsm['X_gex_umap'] = adata.obsm['X_umap']
+    
+    # Velocity field at mu
+    adata_vapor.layers['v_VAPOR'] = np.array(dz_mu.cpu())
+    
+    # ===== Store both mu and z for comparison =====
+    adata_vapor.obsm['X_VAPOR'] = np.array(mu.cpu())     # primary (mu)
+    adata_vapor.obsm['X_VAPOR_z'] = np.array(z.cpu())    # stochastic sample
+    adata_vapor.obsm['X_VAPOR_std'] = np.array(std.cpu())  # uncertainty per dim
+    
+    # Convenience: layers['vapor'] points to mu (so existing code keeps working)
+    adata_vapor.layers['vapor'] = adata_vapor.obsm['X_VAPOR']
+    
+    for key, val in adata.obsm.items():
+        if val is not None:
+            clean_key = key[2:] if key.startswith('X_') else key
+            new_key = f'X_gex_{clean_key}'
+            adata_vapor.obsm[new_key] = adata.obsm[key].copy() if hasattr(adata.obsm[key], 'copy') else np.array(adata.obsm[key])
     
     return adata_vapor
 
@@ -79,7 +98,6 @@ try:
     from tqdm.auto import tqdm
 except Exception:
     tqdm = None
-
 
 def _weighted_aggregate(acc_sum: torch.Tensor, acc_w: float, acc_w2: float,
                         tang: torch.Tensor, w: torch.Tensor):
@@ -118,14 +136,12 @@ def _compute_gate_thresholds_minmax(
     thr_raw = g_min + thr_norm * rng              # back to original scale
     return thr_raw, dict(g_min=g_min, g_max=g_max, rng=rng, thr_norm=thr_norm)
 
-# @torch.no_grad()
+@torch.no_grad()
 def directional_gene_scores_jvp_progress(
     model,
     adata_vapor,
     layer_key: Optional[str] = None,     # if None: use adata_vapor.X ; else adata_vapor.layers[latent_key]
     store_key: str = "vapor_directional_gene_scores",
-    # z_all: torch.Tensor,
-    # gene_names: Optional[List[str]] = None,
     psi_indices: Optional[Iterable[int]] = None,
     batch_size: int = 256,
     alpha: float = 1.0,
@@ -217,14 +233,7 @@ def directional_gene_scores_jvp_progress(
             speed_medians[m] = torch.cat(speed_medians[m]).median().item() + 1e-8
 
     # ---------- Phase B: gate thresholds (quantiles) ----------
-    # thr = None
-    # if tau_quantile is not None:
-    #     thr = _compute_gate_quantiles(model, z_all, tau_quantile,
-    #                                   batch_size=max(1024, batch_size*4),
-    #                                   progress=True if pbar is not None else False,
-    #                                   pbar=pbar)
     thr_raw = None
-    # thr_stats = None
     if tau_quantile is not None:
         thr_raw, _ = _compute_gate_thresholds_minmax(
             model, z_all, tau_quantile,
@@ -322,87 +331,149 @@ def directional_gene_scores_jvp_progress(
         }
     return adata_vapor
 
+from collections import Counter
+
+def _split_lr_pair(pair_name: str):
+    """Return (ligand, receptor). Supports '—' and '-'."""
+    s = str(pair_name)
+    if "—" in s:
+        a, b = s.split("—", 1)
+        return a.strip(), b.strip()
+    if "-" in s:
+        a, b = s.split("-", 1)
+        return a.strip(), b.strip()
+    return s.strip(), None
+
+def _lr_pairs_to_genes(lr_pairs, mode="both", dedup=True):
+    """
+    mode:
+      - "ligand": return ligands
+      - "receptor": return receptors
+      - "both": return ligands + receptors (concat)
+      - "either": return union set (order preserved) of ligands+receptors
+    """
+    ligs, recs = [], []
+    for p in lr_pairs:
+        l, r = _split_lr_pair(p)
+        if l: ligs.append(l)
+        if r: recs.append(r)
+
+    if mode == "ligand":
+        genes = ligs
+    elif mode == "receptor":
+        genes = recs
+    elif mode == "both":
+        genes = ligs + recs
+    elif mode == "either":
+        genes = ligs + recs
+        if dedup:
+            seen = set()
+            genes = [g for g in genes if not (g in seen or seen.add(g))]
+    else:
+        raise ValueError(f"Unknown lr_gene_mode: {mode}")
+
+    if dedup and mode in ("ligand", "receptor", "both"):
+        seen = set()
+        genes = [g for g in genes if not (g in seen or seen.add(g))]
+    return genes
+
 import numpy as np
 import pandas as pd
 
-def _select_top_genes(scores, gene_names, top_n=250, select="pos"):
-    """
-    scores: (n_genes,) numpy
-    select: "pos" | "neg" | "both"
-    """
+def _select_top_features(scores, feature_names, top_n=250, select="pos"):
     scores = np.asarray(scores, dtype=float)
-    gene_names = np.asarray(gene_names)
+    feature_names = np.asarray(feature_names)
 
     out = {}
 
     if select in ("pos", "both"):
         idx = np.argsort(-scores)
         idx = idx[scores[idx] > 0]
-        out["pos"] = gene_names[idx[:top_n]].tolist()
+        out["pos"] = feature_names[idx[:top_n]].tolist()
 
     if select in ("neg", "both"):
         idx = np.argsort(scores)
         idx = idx[scores[idx] < 0]
-        out["neg"] = gene_names[idx[:top_n]].tolist()
+        out["neg"] = feature_names[idx[:top_n]].tolist()
 
-    return out  # {"pos": [...], "neg": [...]}
+    return out
 
-def _run_enrichment_internal(gene_list, gene_sets, organism="Human", cutoff=0.05):
+import time
+import random
 
-    # safety: ensure python list[str]
+def _run_enrichment_internal(gene_list, gene_sets, organism="Human", 
+                             cutoff=0.05,
+                              max_retries=5, 
+                              base_delay=3.0):
     gene_list = [str(g) for g in gene_list if g is not None and str(g) != "nan"]
     gene_sets = list(gene_sets) if isinstance(gene_sets, (list, tuple)) else [gene_sets]
 
     import gseapy as gp
+    
+    last_err = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            enr = gp.enrichr(
+                gene_list=gene_list,
+                gene_sets=gene_sets,
+                organism=organism,
+                outdir=None,
+                no_plot=True,
+                cutoff=cutoff,
+            )
+            return enr.results
 
-    # step A: verify library exists (according to gseapy)
-    libs = gp.get_library_name(organism=organism)
+        except Exception as e:
+            msg = str(e)
+            last_err = e
+            transient = any(k in msg for k in [
+                "Error sending gene list",
+                "try again later",
+                "timeout", "Timeout",
+                "Connection", "connection",
+                "502", "503", "504",
+            ])
+            if not transient or attempt == max_retries:
+                raise
+            delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 1.5)
+            print(f"[RETRY {attempt}/{max_retries}] {msg[:120]} ... sleep {delay:.1f}s")
+            time.sleep(delay)
 
-    # step B: try one by one (so we know which one fails)
-    enr = gp.enrichr(
-            gene_list=gene_list,
-            gene_sets=gene_sets,
-            organism=organism,
-            outdir=None,
-            no_plot=True,
-            cutoff=0.05
-        )
-        
-    return enr.results
+    raise last_err
 
 def run_enrichment(
     adata_VAPOR,
-    psi_indices=None,                 # 1-based; None => all
-    gene_names=None,                  # default from adata_VAPOR.uns
+    psi_indices=None,
+    gene_names=None,
     store_key="vapor_directional_gene_scores",
     top_n=250,
-    select="pos",                     # "pos" | "neg" | "both"
+    select="pos",
     organism="Mouse",
-    gene_sets=(
-        "GO_Biological_Process_2025",
-        "GO_Cellular_Component_2025",
-    ),
+    gene_sets=("GO_Biological_Process_2025", "GO_Cellular_Component_2025"),
+
+    # NEW:
+    feature_mode="gene",        # "gene" | "lr_pair"
+    lr_gene_mode="either",      # "ligand" | "receptor" | "both" | "either"
+    dedup_genes=True,
+    min_genes=10,
 ):
     """
-    Returns:
-        dict[str -> DataFrame], key like:
-        - psi1_pos
-        - psi2_neg
+    Returns dict[str -> DataFrame], key like:
+      - psi1_pos
+      - psi2_neg
     """
 
-    # ---------- gene names ----------
+    # ---------- feature names ----------
     if gene_names is None:
         gene_names = adata_VAPOR.uns.get("gene_names", None)
     if gene_names is None:
         raise ValueError("gene_names not provided and adata_VAPOR.uns['gene_names'] missing.")
 
-    # ---------- fetch gene scores ----------
+    # ---------- fetch scores ----------
     scores_store = adata_VAPOR.uns.get(store_key, None)
     if scores_store is None:
         raise ValueError(f"adata_VAPOR.uns['{store_key}'] not found.")
 
-    # ---------- psi indices (1-based) ----------
-    # infer number of dynamics
     psi_keys = sorted([k for k in scores_store if k.startswith("psi")])
     n_dyn = len(psi_keys)
 
@@ -416,56 +487,70 @@ def run_enrichment(
 
     results = {}
 
-    # ---------- main loop ----------
     for psi1 in psi_ids_1b:
         psi_key = f"psi{psi1}"
         item = scores_store.get(psi_key, None)
-
         if item is None:
             print(f"[WARN] Missing scores for {psi_key}, skipping.")
             continue
 
-        # support either raw array or {"scores": ...}
         scores = item["scores"] if isinstance(item, dict) else item
 
-        picks = _select_top_genes(
-            scores,
-            gene_names,
+        picks = _select_top_features(
+            scores=scores,
+            feature_names=gene_names,
             top_n=top_n,
             select=select,
         )
 
-        for direction, genes in picks.items():
-            if len(genes) < 10:
-                print(f"[WARN] {psi_key}_{direction}: too few genes ({len(genes)}), skip.")
+        for direction, feats in picks.items():
+            if len(feats) < min_genes:
+                print(f"[WARN] {psi_key}_{direction}: too few features ({len(feats)}), skip.")
+                continue
+
+            # ----- convert to gene list if needed -----
+            if feature_mode == "gene":
+                gene_list = feats
+            elif feature_mode == "lr_pair":
+                gene_list = _lr_pairs_to_genes(feats, mode=lr_gene_mode, dedup=dedup_genes)
+            else:
+                raise ValueError(f"Unknown feature_mode: {feature_mode}")
+
+            if len(gene_list) < min_genes:
+                print(f"[WARN] {psi_key}_{direction}: too few genes after conversion ({len(gene_list)}), skip.")
                 continue
 
             key = f"{psi_key}_{direction}"
-            print(f"Running enrichment for {key} ({len(genes)} genes)")
-
+            print(f"Running enrichment for {key} ({len(gene_list)} genes) | feature_mode={feature_mode}")
 
             try:
                 result = _run_enrichment_internal(
-                    gene_list=genes,
+                    gene_list=gene_list,
                     gene_sets=gene_sets,
                     organism=organism,
                 )
-                if result is None or len(result) == 0:
-                    continue
-            
-                key = f"psi{psi1}_{direction}"   
-            
-                df = result.copy()
-                df["psi"] = int(psi1)
-                df["direction"] = str(direction)
-            
-                results[key] = df
-            
-            except Exception as e:
-                print(f"Enrichment failed for psi{psi1}_{direction}: {e}")
+                print('time sleep')
+                time.sleep(1.0)
+                
+            except RuntimeError as e:
+                print(f"[TRANSMISSION FAIL] {key}: {e}")
+                results[key] = {"_status": "transmission_failed", "error": str(e)}
+                continue
+
+            if result is None or len(result) == 0:
+                print(f"[EMPTY] {key}: no enriched terms")
+                results[key] = pd.DataFrame()
+                continue
+
+            df = result.copy()
+            df["psi"] = int(psi1)
+            df["direction"] = str(direction)
+            df["feature_mode"] = str(feature_mode)
+            df["lr_gene_mode"] = str(lr_gene_mode) if feature_mode == "lr_pair" else "NA"
+            df["n_input_genes"] = int(len(gene_list))
+            results[key] = df
 
     return results
-
 
 import pandas as pd
 from collections import defaultdict

@@ -1,11 +1,22 @@
-<<<<<<< HEAD
-# local data
-data/GBM/
-data/*.h5ad
-cache/
-examples/
-*.pptx
-=======
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+vapor-env/
+
+# Packaging artifacts
+*.egg-info/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS files
+.DS_Store
+
 # Ignore all H5AD data files
 *.h5ad
 
@@ -18,4 +29,5 @@ examples/
 # Generated documents/images
 *.pdf
 *.png
->>>>>>> f9ccb3f (Update .gitignore to exclude data and examples)
+
+test_new_for_revision/
