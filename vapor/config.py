@@ -21,6 +21,7 @@ class VAPORConfig:
 
     # Graph / path (TCL)
     graph_k: int = 50
+    dt: float = 1.0
 
     # Model
     latent_dim: int = 64

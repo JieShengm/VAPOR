@@ -193,14 +193,26 @@ class VAPOR(nn.Module):
     def encode(self, x: torch.Tensor):
         return self.vae(x)
     
-    def integrate(self, z0: torch.Tensor, t_span: torch.Tensor):
+    # def integrate(self, z0: torch.Tensor, t_span: torch.Tensor):
+    #     z0_det = z0.detach()
+    #     # reset NFE counter (optional)
+    #     if hasattr(self.transport_op, "nfe"):
+    #         print("Resetting NFE counter to zero.")
+    #         self.transport_op.nfe.zero_()
+    #     return odeint(self.transport_op, z0_det, t_span, 
+    #                   method='rk4') 
+
+    def integrate(self, z0: torch.Tensor, t_span: torch.Tensor,
+              dt: float = 1.0):
         z0_det = z0.detach()
+        print(f"Integrating with dt={dt}...")
         # reset NFE counter (optional)
         if hasattr(self.transport_op, "nfe"):
             print("Resetting NFE counter to zero.")
             self.transport_op.nfe.zero_()
-        return odeint(self.transport_op, z0_det, t_span, 
-                      method='rk4') 
+        return odeint(self.transport_op, z0_det, t_span,
+                    method='rk4',
+                    options={'step_size': dt})
 
     def compute_velocities(self, z: torch.Tensor,) -> torch.Tensor:
         return self.transport_op.compute_velocities(z)

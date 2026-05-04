@@ -447,7 +447,8 @@ def train_model(
         if not is_warmup:
             t_rand = int(torch.randint(1, int(config.t_max) + 1, (1,), device=device).item())
             t_span = torch.linspace(0, t_rand, t_rand + 1, device=device)
-            z_traj = model.integrate(z0, t_span)
+            print(f"Integrating with dt={config.dt}")
+            z_traj = model.integrate(z0, t_span, dt=config.dt)
 
             mu_targets, _, = _build_directed_soft_targets_avgv_global(
                 z_all=z_all_dev,
