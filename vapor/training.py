@@ -374,9 +374,6 @@ def train_model(
     eps = 1e-12
 
     # ---------- dataset flags ----------
-    has_spatial = bool(getattr(dataset, "has_spatial", False))
-    has_batch = bool(getattr(dataset, "has_batch", False))
-
     def _infinite_loader(loader):
         while True:
             for batch in loader:
@@ -447,7 +444,6 @@ def train_model(
         if not is_warmup:
             t_rand = int(torch.randint(1, int(config.t_max) + 1, (1,), device=device).item())
             t_span = torch.linspace(0, t_rand, t_rand + 1, device=device)
-            print(f"Integrating with dt={config.dt}")
             z_traj = model.integrate(z0, t_span, dt=config.dt)
 
             mu_targets, _, = _build_directed_soft_targets_avgv_global(

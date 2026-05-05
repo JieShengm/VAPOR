@@ -208,7 +208,6 @@ class VAPOR(nn.Module):
         print(f"Integrating with dt={dt}...")
         # reset NFE counter (optional)
         if hasattr(self.transport_op, "nfe"):
-            print("Resetting NFE counter to zero.")
             self.transport_op.nfe.zero_()
         return odeint(self.transport_op, z0_det, t_span,
                     method='rk4',
