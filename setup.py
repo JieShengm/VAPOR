@@ -16,22 +16,25 @@ setup(
         "numpy",
         "pandas",
         "matplotlib",
+        "seaborn",
         "scikit-learn",
         "umap-learn",
         "anndata",
         "scanpy",
         "scvelo",
         "tqdm",
-        "gseapy"
+        "gseapy",
     ],
     extras_require={
+        "gpu": [
+            "faiss-gpu",
+        ],
         "notebook": [
             "ipykernel",
             "jupyter-client",
             "pyzmq",
             "tornado",
             "notebook",
-            # or "jupyterlab"
         ],
         "dev": [
             "pytest",

@@ -50,6 +50,8 @@ import scanpy as sc
 from vapor.config import VAPORConfig
 
 # ── 1. Load data ──────────────────────────────────────────────
+# Input should be normalized gene expression (e.g. log1p-normalized),
+# not raw counts. VAPOR applies per-cell z-score scaling internally.
 adata = sc.read_h5ad("your_data.h5ad")
 
 # ── 2. Create dataset ────────────────────────────────────────
