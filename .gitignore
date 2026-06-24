@@ -31,3 +31,9 @@ examples/
 *.png
 
 test_new_for_revision/
+
+# Internal tools
+grid_search.py
+
+# Simulations (internal validation)
+simulations/
