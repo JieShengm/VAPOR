@@ -65,11 +65,11 @@ dataset = vapor.dataset_from_adata(
 # You can also select root/terminal cells by metadata:
 from vapor.dataset import select_obs_indices
 
-root_idx, _, _ = select_obs_indices(
-    adata, where=["celltype=HSC", "batch=1"], n=200, return_names=False
+root_idx, _ = select_obs_indices(
+    adata, where={"celltype": "Radial Glia", "Age": "pcw16"}, n=200, return_names=False
 )
-terminal_idx, _, _ = select_obs_indices(
-    adata, where=["celltype=Monocyte"], n=200, return_names=False
+terminal_idx, _ = select_obs_indices(
+    adata, where={"celltype": "Neuron", "Age": "pcw24"}, n=200, return_names=False
 )
 dataset = vapor.dataset_from_adata(
     adata, root_indices=root_idx, terminal_indices=terminal_idx
