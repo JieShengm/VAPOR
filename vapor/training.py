@@ -1,5 +1,5 @@
-import time
 import math
+import time
 from pathlib import Path
 from typing import Optional, List, Union, Dict, Any
 
@@ -7,10 +7,12 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
-import torch.optim as optim
 from torch.utils.data import DataLoader, Subset
 
-from typing import Optional, Union, Dict, Any
+try:
+    from tqdm.auto import tqdm
+except ImportError:
+    tqdm = None
 
 from .config import VAPORConfig
 from .utils import resolve_device
@@ -47,38 +49,76 @@ class _WithIndex(torch.utils.data.Dataset):
 
 @torch.no_grad()
 def _encode_all_z(model: 'VAPOR',
-                dataset, 
-                device, 
-                batch_size: int = 1024,):
+                dataset,
+                device,
+                batch_size: int = 1024,
+                mu_only: bool = False):
     was_training = model.training
     model.eval()
-    
+
     loader = DataLoader(_WithIndex(dataset), batch_size=batch_size, shuffle=False)
-    mu_list, lv_list = [], []
+    mu_list = []
+    lv_list = [] if not mu_only else None
     for batch in loader:
-        x = batch[0].to(device)
+        x = batch[0].to(device, non_blocking=True)
         mu, logvar = model.vae.encode(x)
-        mu_list.append(mu.cpu())
-        lv_list.append(logvar.cpu())
-    mu_all = torch.cat(mu_list, dim=0)        # (N, D)
-    lv_all = torch.cat(lv_list, dim=0)        # (N, D)
-    
+        mu_list.append(mu)
+        if not mu_only:
+            lv_list.append(logvar)
+    mu_all = torch.cat(mu_list, dim=0)
+
     if was_training:
         model.train()
-    std_all = (0.5 * lv_all).exp()
 
-    return mu_all, std_all 
+    if mu_only:
+        return mu_all.cpu(), None
+
+    lv_all = torch.cat(lv_list, dim=0)
+    std_all = (0.5 * lv_all).exp()
+    return mu_all.cpu(), std_all.cpu()
+
+def _faiss_available(gpu: bool = False) -> bool:
+    try:
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            import faiss
+        if gpu:
+            return faiss.get_num_gpus() > 0
+        return True
+    except ImportError:
+        return False
 
 @torch.no_grad()
-def _build_global_knn_graph_sklearn(z_all_cpu: torch.Tensor, K: int = 50, metric: str = "euclidean", n_jobs: int = -1):
-    """Build global kNN graph on CPU using sklearn. Returns (nbr_idx_cpu, nbr_dist_cpu) as torch tensors."""
-    from sklearn.neighbors import NearestNeighbors
-    z_np = z_all_cpu.numpy()
-    nn = NearestNeighbors(n_neighbors=K+1, metric=metric, n_jobs=n_jobs, algorithm="auto")
-    nn.fit(z_np)
-    dist, idx = nn.kneighbors(z_np, return_distance=True)
-    nbr_idx = torch.from_numpy(idx[:, 1:K+1].astype(np.int64))          # (N,K)
-    nbr_dist = torch.from_numpy(dist[:, 1:K+1].astype(np.float32))      # (N,K)
+def _build_global_knn_graph(z_all_cpu: torch.Tensor, K: int = 50, device=None):
+    """Build kNN graph. Uses FAISS-GPU if available, else FAISS-CPU, else sklearn."""
+    z_np = np.ascontiguousarray(z_all_cpu.numpy(), dtype=np.float32)
+    N, D = z_np.shape
+    K1 = K + 1  # include self
+
+    use_gpu = (device is not None and str(device).startswith("cuda"))
+
+    # Only use FAISS on GPU; sklearn is competitive on CPU
+    if use_gpu and _faiss_available(gpu=True):
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            import faiss
+        index = faiss.IndexFlatL2(D)
+        if use_gpu and faiss.get_num_gpus() > 0:
+            index = faiss.index_cpu_to_all_gpus(index)
+        index.add(z_np)
+        dist_sq, idx = index.search(z_np, K1)
+        nbr_idx = torch.from_numpy(idx[:, 1:K1].astype(np.int64))
+        nbr_dist = torch.from_numpy(np.sqrt(np.maximum(dist_sq[:, 1:K1], 0)).astype(np.float32))
+    else:
+        from sklearn.neighbors import NearestNeighbors
+        nn = NearestNeighbors(n_neighbors=K1, metric="euclidean", n_jobs=-1, algorithm="auto")
+        nn.fit(z_np)
+        dist, idx = nn.kneighbors(z_np, return_distance=True)
+        nbr_idx = torch.from_numpy(idx[:, 1:K1].astype(np.int64))
+        nbr_dist = torch.from_numpy(dist[:, 1:K1].astype(np.float32))
+
     return nbr_idx, nbr_dist
 
 @torch.no_grad()
@@ -99,65 +139,157 @@ def _sample_from_q_top_p(q: torch.Tensor, nbrs: torch.Tensor, top_p: float = 0.9
     nxt = nbrs[torch.arange(B, device=q.device), sampled_k]
     return nxt
 
+
+@torch.no_grad()
+def _compute_geo_dist_from_roots(
+    nbr_idx_cpu: torch.Tensor,           # (N, K) int64
+    nbr_dist_cpu: torch.Tensor,          # (N, K) float32
+    root_idx: Optional[List[int]],
+) -> Optional[torch.Tensor]:
+    """Geodesic distance from any-of-root on a symmetrized kNN graph.
+
+    Returns a (N,) float32 tensor. Cells in components without a root
+    get NaN (the soft-target builder treats NaN as a neutral signal,
+    so those cells fall back to v-only ranking). Returns None when
+    no roots are supplied so callers can skip the geo branch entirely.
+    """
+    if not root_idx:
+        return None
+    from scipy.sparse import csr_matrix
+    from scipy.sparse.csgraph import dijkstra
+
+    N, K = nbr_idx_cpu.shape
+    rows = np.repeat(np.arange(N), K)
+    cols = nbr_idx_cpu.numpy().ravel()
+    data = nbr_dist_cpu.numpy().ravel()
+    A = csr_matrix((data, (rows, cols)), shape=(N, N))
+    # kNN is asymmetric; geodesic distance is on the undirected graph.
+    A = A.maximum(A.T)
+
+    d_mat = dijkstra(A, directed=False, indices=list(root_idx),
+                     return_predecessors=False)
+    d = np.min(d_mat, axis=0)             # min distance to ANY root
+    d = np.where(np.isinf(d), np.nan, d)  # unreachable -> NaN
+    return torch.from_numpy(d.astype(np.float32))
+
 @torch.no_grad()
 def _build_directed_soft_targets_avgv_global(
-    z_all: torch.Tensor,
-    v_all: torch.Tensor,
-    nbr_idx_global: torch.Tensor,
-    T: int,
-    idx0: torch.Tensor,
-    cos_threshold: float = 0.0,
+    z_all,
+    v_all,
+    nbr_idx_global,
+    T,
+    idx0,
     tau_q: float = 0.25,
     top_p: float = 0.8,
+    geo_dist: Optional[torch.Tensor] = None,
+    geo_mode: str = "forward_mask",          # 'forward_mask' | 'geo_v_blend' | 'off'
+    geo_mask_floor: float = 0.05,
+    w_v: float = 1.0,                        # only consulted when geo_mode='geo_v_blend'
+    w_inertia: float = 0.0,                  # velocity-inertia weight (local)
+    ref_dir: Optional[torch.Tensor] = None,  # (N, D) per-cell reference dir
+    w_ref: float = 0.0,                      # weight on ref_dir alignment
 ):
-    """Soft target mu + stochastic rollout on global kNN graph."""
+    """Soft target rollout on a global kNN graph."""
+    assert geo_mode in ("forward_mask", "geo_v_blend", "off"), \
+        f"geo_mode must be 'forward_mask', 'geo_v_blend', or 'off'; got {geo_mode!r}"
+
     B = idx0.numel()
     D = z_all.size(1)
     mu_targets = torch.zeros((B, T, D), device=z_all.device)
-
     paths = torch.zeros((B, T), dtype=torch.long, device=z_all.device)
     curr = idx0.clone()
     paths[:, 0] = curr
+    prev = None  # NEW: tracks z_all-index of the previous hop, for inertia
 
     for t in range(1, T):
-        nbrs = nbr_idx_global[curr]           # (B,K)
-        z_n  = z_all[nbrs]                    # (B,K,D)
-        z_c  = z_all[curr].unsqueeze(1)       # (B,1,D)
-        diffs = z_n - z_c                     # (B,K,D)
+        nbrs = nbr_idx_global[curr]
+        z_n = z_all[nbrs]
+        z_c = z_all[curr].unsqueeze(1)
+        diffs = z_n - z_c
 
-        # --- base: velocity projection term ---
+        # ── model-v cosine score (stretched to [0, 1]) ──
         v_dir = F.normalize(v_all[curr], dim=1, eps=1e-6).unsqueeze(1)
-        cosines = F.cosine_similarity(diffs, v_dir, dim=-1)            # (B,K) in [-1,1]
-        cos_norm = (cosines + 1.0) / 2.0                               # -> [0,1]
-
-        if cos_threshold > 0.0:
-            cos_norm = cos_norm.masked_fill(cos_norm < cos_threshold, 0.0)
-
-        # stretch each row to [0,1] (same as your original)
+        cosines = F.cosine_similarity(diffs, v_dir, dim=-1)
+        cos_norm = (cosines + 1.0) / 2.0
         c_min = cos_norm.min(dim=1, keepdim=True).values
         c_max = cos_norm.max(dim=1, keepdim=True).values
-        cos_stretched = (cos_norm - c_min) / (c_max - c_min + 1e-18)   # (B,K)
+        cos_stretched = (cos_norm - c_min) / (c_max - c_min + 1e-18)
 
-        # --- distance kernel ---
-        d2 = (diffs * diffs).sum(dim=-1)                               # (B,K)
-        d  = torch.sqrt(d2 + 1e-18)
+        # ── directional anchor ──
+        if geo_dist is None or geo_mode == "off":
+            score = cos_stretched
 
-        sigma = d.median(dim=1, keepdim=True).values.clamp_min(1e-12)  # (B,1)
-        gauss_K = torch.exp(-d2 / (2.0 * sigma * sigma + 1e-18))       # (B,K)
-        g_max = gauss_K.max(dim=1, keepdim=True).values
-        gauss_norm = gauss_K / (g_max + 1e-18)                         # (B,K) in (0,1]
+        elif geo_mode == "geo_v_blend":
+            geo_self = geo_dist[curr].unsqueeze(1)
+            geo_nbrs = geo_dist[nbrs]
+            delta_geo = geo_nbrs - geo_self
+            nan_mask = torch.isnan(delta_geo)
+            delta_geo = torch.where(nan_mask, torch.zeros_like(delta_geo),
+                                    delta_geo)
+            d_min = delta_geo.min(dim=1, keepdim=True).values
+            d_max = delta_geo.max(dim=1, keepdim=True).values
+            geo_score = (delta_geo - d_min) / (d_max - d_min + 1e-18)
+            score = (1.0 - w_v) * geo_score + w_v * cos_stretched
 
-        # --- final base score (bounded, stable) ---
-        score = cos_stretched * gauss_norm                              # (B,K) in [0,1]
+        elif geo_mode == "forward_mask":
+            geo_self = geo_dist[curr].unsqueeze(1)
+            geo_nbrs = geo_dist[nbrs]
+            delta_geo = geo_nbrs - geo_self
+            nan_mask = torch.isnan(delta_geo)
+            delta_geo = torch.where(nan_mask, torch.zeros_like(delta_geo),
+                                    delta_geo)
+            fwd_mask = torch.where(
+                delta_geo > 0,
+                torch.ones_like(delta_geo),
+                torch.full_like(delta_geo, geo_mask_floor),
+            )
+            fwd_mask = torch.where(nan_mask, torch.full_like(fwd_mask, 0.5),
+                                   fwd_mask)
+            score = cos_stretched * fwd_mask
+
+        # velocity inertia: favor neighbors consistent with previous hop direction
+        if w_inertia > 0.0 and prev is not None:
+            prev_step = z_all[curr] - z_all[prev]
+            prev_dir = F.normalize(prev_step, dim=1, eps=1e-6).unsqueeze(1)
+            inertia_cos = F.cosine_similarity(diffs, prev_dir, dim=-1)
+            score = score + w_inertia * (inertia_cos + 1.0) / 2.0
+
+        # reference-direction anchor (optional, used in simulations)
+        if ref_dir is not None and w_ref > 0.0:
+            ref_curr = ref_dir[curr]                                # (B, D)
+            ref_norm = ref_curr.norm(dim=1, keepdim=True)
+            has_ref = (ref_norm.squeeze(-1) > 1e-6).float()         # (B,)
+            ref_unit = ref_curr / ref_norm.clamp_min(1e-9)          # (B, D)
+            ref_cos = F.cosine_similarity(
+                diffs, ref_unit.unsqueeze(1), dim=-1)               # (B, K)
+            ref_score = (ref_cos + 1.0) / 2.0
+            score = score + w_ref * has_ref.unsqueeze(1) * ref_score
 
         q = torch.softmax(score / max(tau_q, 1e-6), dim=1)
         nxt = _sample_from_q_top_p(q, nbrs, top_p=top_p)
         paths[:, t] = nxt
-        target = z_all[nxt]                             # (B,D)
-        mu_targets[:, t] = target
+        mu_targets[:, t] = z_all[nxt]
+        prev = curr      # NEW
         curr = nxt
 
     return mu_targets, paths
+
+
+import math as _math
+
+def _make_sigmoid_schedule(sharpness=10):
+    """Pre-compute constants for the sigmoid schedule."""
+    y0 = 1 / (1 + _math.exp(sharpness * 0.5))
+    y1 = 1 / (1 + _math.exp(-sharpness * 0.5))
+    inv_range = 1.0 / (y1 - y0)
+    def _sigmoid(start, end, step, total_steps):
+        x = step / total_steps
+        y = 1 / (1 + _math.exp(-sharpness * (x - 0.5)))
+        t = (y - y0) * inv_range
+        return start + (end - start) * t
+    return _sigmoid
+
+sigmoid = _make_sigmoid_schedule(sharpness=10)
 
 def train_model(
     model: 'VAPOR',
@@ -168,18 +300,16 @@ def train_model(
     save_dir: Optional[Union[str, Path]] = 'vapor/out/',
     exp_name: str = "run",
     verbose: bool = True,
-    graph_update_every_steps: int = 25,
+    graph_update_every_steps: int = 50,
     graph_build_batch_size: int = 2048,
-    graph_use_mu: bool = True,
+    graph_use_mu: Optional[bool] = None,
     soft_tau_q: float = 0.3,
     soft_top_p: float = 0.7,
-    cos_threshold: float = 0.0,
     # optional knobs
     prior_weight: float = 1.0,          # 0.0 to disable prior
-    viz_every_steps: int = 0,           # 0 disables
+    # viz_every_steps: int = 0,           # 0 disables
     log_every: Optional[int] = None,    # default falls back to config.log_every or 50
     save_every_steps: Optional[int] = None,
-    # ckpt_every_steps: Optional[int] = None,  # default falls back to config.save_every_steps or 500
     **kwargs
 ) -> 'VAPOR':
 
@@ -194,6 +324,10 @@ def train_model(
         else:
             print(f"Warning: Unknown parameter '{k}' ignored")
 
+    # ---------- resolve defaults from config ----------
+    if graph_use_mu is None:
+        graph_use_mu = bool(config.graph_use_mu)
+
     # ---------- seed (ONE place) ----------
     seed = config.seed
     deterministic = bool(config.deterministic)
@@ -202,13 +336,16 @@ def train_model(
     if seed is not None:
         from .utils import set_seed
         set_seed(int(seed), deterministic=deterministic)
-        if verbose:
-            print(f"[Seed] seed={seed} | deterministic={deterministic} | seed_split={seed_split}")
 
     # ---------- device ----------
     device = resolve_device(config)
     config.device = device
     model.to(device)
+
+    # ---------- mixed precision ----------
+    use_amp = (device.type == "cuda")
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+    amp_dtype = torch.float16
 
     # ---------- split ----------
     if split_train_test:
@@ -219,8 +356,6 @@ def train_model(
         g = torch.Generator().manual_seed(split_seed)
         train_subset, test_subset = torch.utils.data.random_split(dataset, [n_train, n_test], generator=g)
         train_base, test_base = train_subset, test_subset
-        if verbose:
-            print(f"Train / Test split: train={n_train}, test={n_test} (test_size={test_size})")
     else:
         train_base, test_base = dataset, None
 
@@ -281,8 +416,6 @@ def train_model(
     total_steps = int(config.total_steps)
     s1 = int(0.10 * total_steps)   # VAE-only
     s2 = int(0.20 * total_steps)   # ramp
-    if verbose:
-        print(f"Training (step-based) | batch={config.batch_size} | total_steps={total_steps}")
 
     # ---------- logging controls ----------
     log_every = int(log_every or getattr(config, "log_every", 50) or 50)
@@ -290,11 +423,7 @@ def train_model(
     ckpt_every_steps = int(getattr(config, "ckpt_every_steps", 10000) or 10000)
     
     # ---------- global graph cache ----------
-    # K = int(getattr(config, "graph_k", 50) or 50)
-    try:
-        K = int(config.graph_k)
-    except AttributeError:
-        raise
+    K = int(config.graph_k)
     soft_tau_q = float(soft_tau_q)
     soft_top_p = float(soft_top_p)
 
@@ -302,27 +431,38 @@ def train_model(
     z_all_dev = None
     v_all = None
     nbr_idx_global = None
-    # prev_z_all_cpu = None
+    geo_dist_global = None
+
+    from .utils import get_base_dataset
+    base_ds = get_base_dataset(dataset)
+    root_idx_list = (sorted(base_ds.root_indices)
+                     if getattr(base_ds, "root_indices", None) else [])
+
+    geo_refresh_every = max(500, graph_update_every_steps * 10)
+    _last_geo_step = -geo_refresh_every  # force first computation
 
     @torch.no_grad()
-    def _refresh_global_graph(step: int):        
-        nonlocal z_all_cpu, z_all_dev, v_all, nbr_idx_global#, prev_z_all_cpu 
-        # print(f"[Graph] Refresh at step {step}")
-        
-        mu_all, std_all = _encode_all_z(
-            model, dataset, device=device,
-            batch_size=graph_build_batch_size)
-        
-        z_all_cpu_new = mu_all if graph_use_mu else (mu_all + std_all * torch.randn_like(mu_all))
-        
-        z_all_cpu = z_all_cpu_new
+    def _refresh_global_graph(step: int):
+        nonlocal z_all_cpu, z_all_dev, v_all, nbr_idx_global, geo_dist_global
+        nonlocal _last_geo_step
+        mu_all, std_all = _encode_all_z(model, dataset, device=device,
+                                        batch_size=graph_build_batch_size,
+                                        mu_only=graph_use_mu)
+        if graph_use_mu:
+            z_all_cpu = mu_all
+        else:
+            z_all_cpu = mu_all + std_all * torch.randn_like(mu_all)
         z_all_dev = z_all_cpu.to(device)
-        nbr_idx_cpu, _ = _build_global_knn_graph_sklearn(z_all_cpu, K=K)
-        
+        nbr_idx_cpu, nbr_dist_cpu = _build_global_knn_graph(z_all_cpu, K=K, device=device)
         nbr_idx_global = nbr_idx_cpu.to(device)
-        v_all = model.compute_velocities(z_all_dev).detach()  
-        
-    _refresh_global_graph(step=0)
+        if step - _last_geo_step >= geo_refresh_every:
+            geo_t = _compute_geo_dist_from_roots(nbr_idx_cpu, nbr_dist_cpu,
+                                                 root_idx_list)
+            geo_dist_global = geo_t.to(device) if geo_t is not None else None
+            _last_geo_step = step
+        v_all = model.compute_velocities(z_all_dev).detach()
+
+    _graph_initialized = False
 
     # ---------- update-based balancing controller (AdamW-aware) ----------
     @torch.no_grad()
@@ -381,9 +521,6 @@ def train_model(
 
     loader_iter = _infinite_loader(train_loader)
 
-    # # infinite loader (reshuffle happens each epoch because loader is recreated each pass internally)
-    # loader_iter = cycle(train_loader)
-
     # ---------- step history (for CSV) ----------
     step_rows = []
     test_rows = []
@@ -391,9 +528,6 @@ def train_model(
     if save_dir is not None:
         save_dir = Path(save_dir)
         (save_dir / "csv").mkdir(parents=True, exist_ok=True)
-
-    # ---------- window logging ----------
-    win = dict(mse=0.0, kld=0.0, traj=0.0, prior=0.0, n=0)
 
     history = {
         "step": [], "recon": [], "kld": [],
@@ -405,6 +539,10 @@ def train_model(
 
     t_start = time.time()
     model.train()
+
+    pbar = None
+    if verbose and tqdm is not None:
+        pbar = tqdm(total=total_steps, desc="Training", unit="step")
 
     for global_step in range(total_steps):
         batch = next(loader_iter)
@@ -418,9 +556,15 @@ def train_model(
             phase = "full"
         is_warmup = (phase == "vae_only")
 
-        # refresh global graph
-        if graph_update_every_steps > 0 and (global_step % graph_update_every_steps == 0) and global_step != 0 and (not is_warmup):
-            _refresh_global_graph(step=global_step)
+        # refresh global graph (lazy init — skip during VAE-only warmup)
+        if not is_warmup:
+            if not _graph_initialized:
+                if verbose:
+                    print("Building initial graph...", flush=True)
+                _refresh_global_graph(step=global_step)
+                _graph_initialized = True
+            elif graph_update_every_steps > 0 and (global_step % graph_update_every_steps == 0):
+                _refresh_global_graph(step=global_step)
 
         # unpack + idx_global
         idx_global = torch.as_tensor(batch[-1], device=device, dtype=torch.long)
@@ -430,82 +574,93 @@ def train_model(
         is_root = torch.as_tensor(is_root, device=device, dtype=torch.bool)
         is_term = torch.as_tensor(is_term, device=device, dtype=torch.bool)
 
-        # -------- forward VAE --------
-        recon, z0, mu0, logvar0 = model.encode(x)
-        recon_loss = F.mse_loss(recon, x)
-        kl_loss = (-0.5 * (1 + logvar0 - mu0.pow(2) - logvar0.exp())).mean()
-        vae_loss = recon_loss + float(config.beta) * kl_loss
+        # -------- forward (with AMP) --------
+        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+            recon, z0, mu0, logvar0 = model.encode(x)
+            recon_loss = F.mse_loss(recon, x)
+            kl_loss = (-0.5 * (1 + logvar0 - mu0.pow(2) - logvar0.exp())).mean()
+            vae_loss = recon_loss + float(config.beta) * kl_loss
 
-        traj_loss = torch.tensor(0.0, device=config.device)
-        prior_loss = torch.tensor(0.0, device=config.device)
-        loss_transport = torch.tensor(0.0, device=config.device)
+            traj_loss = torch.tensor(0.0, device=config.device)
+            prior_loss = torch.tensor(0.0, device=config.device)
+            loss_transport = torch.tensor(0.0, device=config.device)
 
-        # -------- transport losses --------
-        if not is_warmup:
-            t_rand = int(torch.randint(1, int(config.t_max) + 1, (1,), device=device).item())
-            t_span = torch.linspace(0, t_rand, t_rand + 1, device=device)
-            z_traj = model.integrate(z0, t_span, dt=config.dt)
+            # -------- transport losses --------
+            if not is_warmup:
+                t_rand = int(torch.randint(1, int(config.t_max) + 1, (1,), device=device).item())
+                t_span = torch.linspace(0, t_rand, t_rand + 1, device=device)
+                z_traj = model.integrate(z0.float(), t_span, dt=config.dt)
 
-            mu_targets, _, = _build_directed_soft_targets_avgv_global(
-                z_all=z_all_dev,
-                v_all=v_all,
-                nbr_idx_global=nbr_idx_global,
-                T=z_traj.size(0),
-                idx0=idx_global,
-                tau_q=soft_tau_q,
-                top_p=soft_top_p,
-                cos_threshold=cos_threshold,
-            )
+                mu_targets, paths = _build_directed_soft_targets_avgv_global(
+                    z_all=z_all_dev,
+                    v_all=v_all,
+                    nbr_idx_global=nbr_idx_global,
+                    T=z_traj.size(0),
+                    idx0=idx_global,
+                    tau_q=soft_tau_q,
+                    top_p=soft_top_p,
+                        geo_dist=geo_dist_global,
+                    geo_mode='geo_v_blend',
+                    geo_mask_floor=0.05,
+                    w_v=sigmoid(0, 1, global_step, total_steps),
+                    w_inertia=2.0
+                )
 
-            if z_traj.size(0) > 1:
-                traj_loss = torch.stack(
-                    [F.mse_loss(z_traj[t], mu_targets[:, t]) for t in range(1, z_traj.size(0))]
-                ).mean()
-                    
-            if prior_weight != 0.0:
-                if is_root.any() or is_term.any():
-                    z_at_curr = z_all_dev[idx_global]
-                    v0 = model.compute_velocities(z_at_curr)            
-                    prior_loss = model.flag_direction_loss_graph_global(
-                        z0=z_at_curr,
-                        v0=v0,                                   
-                        is_start=is_root,
-                        is_term=is_term,
-                        z_all=z_all_dev,
-                        nbr_idx_global=nbr_idx_global,
-                        idx_global=idx_global,
-                        nbr_mask_global=None,
-                    )
+                if z_traj.size(0) > 1:
+                    traj_loss = F.mse_loss(z_traj[1:], mu_targets[:, 1:].permute(1, 0, 2))
 
-            # schedule multipliers
-            if phase == "ramp_transport":
-                r = (global_step - s1) / max(s2 - s1, 1)
-                r = float(max(0.0, min(1.0, r)))
-                sched_to = r
-                w_traj = r
-                w_prior = r
+                if prior_weight != 0.0:
+                    if is_root.any() or is_term.any():
+                        z_at_curr = z_all_dev[idx_global]
+                        v0 = model.compute_velocities(z_at_curr)
+                        prior_loss = model.flag_direction_loss_graph_global(
+                            z0=z_at_curr,
+                            v0=v0,
+                            is_start=is_root,
+                            is_term=is_term,
+                            z_all=z_all_dev,
+                            nbr_idx_global=nbr_idx_global,
+                            idx_global=idx_global,
+                            nbr_mask_global=None,
+                        )
+
+                # schedule multipliers
+                if phase == "ramp_transport":
+                    r = (global_step - s1) / max(s2 - s1, 1)
+                    r = float(max(0.0, min(1.0, r)))
+                    sched_to = r
+                    w_traj = r
+                    w_prior = r
+                else:
+                    sched_to = 1.0
+                    w_traj = 1.0
+                    w_prior = 1.0
+
+                loss_transport = w_traj * traj_loss + w_prior * prior_loss
             else:
-                sched_to = 1.0
-                w_traj = 1.0
-                w_prior = 1.0
+                sched_to = 0.0
 
-            loss_transport = w_traj * traj_loss + w_prior * prior_loss
-        else:
-            sched_to = 0.0
+            # -------- total loss --------
+            loss = vae_loss + loss_transport
+            lambda_orth = float(getattr(config, "lambda_orth", 0.0))
+            orth_mode   = str(getattr(config, "orth_mode", "stiefel"))
+            if lambda_orth > 0:
+                orth = model.transport_op.orthogonality_loss(mode=orth_mode)
+                loss = loss + lambda_orth * orth
 
-        # -------- set LRs for this step (ramp fixed to_mult=1) --------
+        # -------- backward (with AMP) --------
         set_optimizer_lr(opt_vae, base_lr_vae * vae_mult)
         set_optimizer_lr(opt_to,  base_lr_to * base_to_scale * sched_to)
 
-        # -------- backward --------
         opt_vae.zero_grad(set_to_none=True)
         opt_to.zero_grad(set_to_none=True)
 
-        loss = vae_loss + loss_transport
-        loss.backward()
+        scaler.scale(loss).backward()
 
         grad_clip = getattr(config, "grad_clip", None)
         if grad_clip is not None:
+            scaler.unscale_(opt_vae)
+            scaler.unscale_(opt_to)
             torch.nn.utils.clip_grad_norm_(model.transport_op.parameters(), max_norm=float(grad_clip))
 
         # -------- update-based adaptation snapshots (only full) --------
@@ -515,9 +670,10 @@ def train_model(
             vae_old = _snap_params(vae_params)
             to_old  = _snap_params(other_params)
 
-        opt_vae.step()
+        scaler.step(opt_vae)
         if not is_warmup:
-            opt_to.step()
+            scaler.step(opt_to)
+        scaler.update()
 
         if do_adapt:
             u_vae = _median_rel_update(vae_params, vae_old)
@@ -591,20 +747,21 @@ def train_model(
         history["total"].append(float(loss.item()))
         history["phase"].append(phase)    
 
-        # -------- window logging --------
-        win["mse"] += float(recon_loss.item())
-        win["kld"] += float(kl_loss.item())
-        win["traj"] += float(traj_loss.item()) if not is_warmup else 0.0
-        win["prior"] += float(prior_loss.item()) if (not is_warmup and prior_weight != 0.0) else 0.0
-        win["n"] += 1
-
-        if verbose and (global_step % log_every == 0) and win["n"] > 0:
-            print(
-                f"Step {global_step:06d}/{total_steps} | phase={phase:<13} | "
-                f"Recon {win['mse']/win['n']:.4f} | KL {win['kld']/win['n']:.4f} | "
-                f"Traj {win['traj']/win['n']:.4f} | Prior {win['prior']/win['n']:.4f}"
-            )
-            win = dict(mse=0.0, kld=0.0, traj=0.0, prior=0.0, n=0)
+        # -------- progress --------
+        if pbar is not None:
+            pbar.update(1)
+            if global_step % log_every == 0:
+                postfix = {
+                    "phase": phase,
+                    "recon": f"{recon_loss.item():.4f}",
+                    "kl": f"{kl_loss.item():.4f}",
+                }
+                if not is_warmup:
+                    postfix["traj"] = f"{traj_loss.item():.4f}"
+                pbar.set_postfix(postfix)
+        elif verbose and (global_step % log_every == 0):
+            traj_str = f" | traj={traj_loss.item():.4f}" if not is_warmup else ""
+            print(f"[{global_step}/{total_steps}] {phase} | recon={recon_loss.item():.4f} | kl={kl_loss.item():.4f}{traj_str}", flush=True)
 
         step_rows.append(dict(
             step=global_step,
@@ -614,7 +771,7 @@ def train_model(
             traj=float(traj_loss.item()) if not is_warmup else 0.0,
             prior=float(prior_loss.item()) if not is_warmup else 0.0,
             total=float(loss.item()),
-            lr_vae=float(get_optimizer_lr(opt_vae)),     # ← 顺便记真实 LR
+            lr_vae=float(get_optimizer_lr(opt_vae)),
             lr_to=float(get_optimizer_lr(opt_to)),
         ))
 
@@ -655,16 +812,8 @@ def train_model(
                     "exp_name": exp_name,
                 },
             )
-            if verbose:
-                print(f"  [Checkpoint] saved -> {ckpt_path}")
-
-        # -------- optional viz hook --------
-        if (viz_every_steps > 0) and (global_step % viz_every_steps == 0) and (save_dir is not None) and (not is_warmup):
-            pass
-
-    if verbose:
-        print("-" * 80)
-        print(f"Training completed. total_time={time.time()-t_start:.2f}s")
+    if pbar is not None:
+        pbar.close()
         
     step_rows.append(dict(
         step=global_step,
@@ -734,7 +883,6 @@ def plot_losses(history, save_dir=None, show=True, s1=None, s2=None):
     ax.set_ylabel("VAE loss")
     ax.set_title("VAE losses")
     ax.legend(loc="best", fontsize=9)
-    # ax.grid(alpha=0.3)
 
     # ===== Bottom: Transport losses =====
     ax = axes[1]
@@ -744,7 +892,6 @@ def plot_losses(history, save_dir=None, show=True, s1=None, s2=None):
     ax.set_ylabel("Transport loss")
     ax.set_title("Transport losses")
     ax.legend(loc="best", fontsize=9)
-    # ax.grid(alpha=0.3)
 
     # ===== Phase boundaries on both subplots =====
     for ax in axes:

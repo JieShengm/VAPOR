@@ -1,73 +1,46 @@
 # vapor/dataset.py
 
-import torch
-from torch.utils.data import Dataset
 import numpy as np
 import pandas as pd
+import torch
+from torch.utils.data import Dataset
 from typing import Optional, List, Dict, Tuple, Union, Any
-from sklearn.preprocessing import MinMaxScaler
 
 
 # =========================
 # Selection helpers (root/terminal)
 # =========================
 
-WhereClause = Optional[List[str]]  # e.g. ["celltype=Early RG", "Age=pcw16"]
-
-def _parse_where(where: WhereClause) -> Dict[str, str]:
-    """
-    Parse ["col=val", "col2=val2"] -> {"col":"val","col2":"val2"}.
-    Multiple clauses are AND-ed.
-    """
-    where = where or []
-    out: Dict[str, str] = {}
-    for item in where:
-        if "=" not in item:
-            raise ValueError(f"Invalid where clause '{item}'. Use COLUMN=VALUE.")
-        k, v = item.split("=", 1)
-        k = k.strip()
-        v = v.strip()
-        if not k or v == "":
-            raise ValueError(f"Invalid where clause '{item}'. Use COLUMN=VALUE with non-empty parts.")
-        # last one wins if repeated column
-        out[k] = v
-    return out
-
-
 def select_obs_indices(
     adata: Any,
-    where: WhereClause,
+    where: Dict[str, str],
     n: Optional[int] = None,
     seed: int = 0,
     return_names: bool = True,
-) -> Tuple[Union[pd.Index, List[int]], Dict[str, str], int]:
-    """
-    Select cells from adata.obs by AND-ing conditions like ["col=val", "col2=val2"].
+) -> Tuple[Union[pd.Index, List[int]], int]:
+    """Select cells from adata.obs by AND-ing column conditions.
 
     Args:
-      adata: AnnData-like object with .obs (DataFrame) and .obs_names (Index)
-      where: list[str] of COLUMN=VALUE, AND semantics
+      adata: AnnData object
+      where: dict of {column: value} conditions (AND-ed)
       n: sample size; if None, return all matched
       seed: random seed for sampling
-      return_names: if True, return obs_names (pd.Index); else return integer positions (List[int])
+      return_names: if True, return obs_names; else return integer positions
 
     Returns:
       selected: pd.Index of obs_names (if return_names) else List[int] positions
-      parsed_where: dict of conditions
-      matched_count: matched before sampling
+      matched_count: number matched before sampling
     """
-    parsed = _parse_where(where)
     obs = adata.obs
-
     mask = pd.Series(True, index=obs.index)
-    for col, val in parsed.items():
+    for col, val in where.items():
         if col not in obs.columns:
             raise KeyError(f"Column '{col}' not found in adata.obs.")
         mask &= (obs[col].astype(str) == str(val))
 
     matched = int(mask.sum())
     if matched == 0:
-        raise ValueError(f"No cells match conditions: {parsed}")
+        raise ValueError(f"No cells match conditions: {where}")
 
     matched_names = obs.index[mask]
 
@@ -76,28 +49,18 @@ def select_obs_indices(
         matched_names = obs.loc[matched_names].sample(n=n, random_state=seed).index
 
     if return_names:
-        return pd.Index(matched_names), parsed, matched
+        return pd.Index(matched_names), matched
 
     positions = [adata.obs_names.get_loc(name) for name in matched_names]
-    return positions, parsed, matched
+    return positions, matched
 
-
-# vapor/dataset.py
-
-import numpy as np
-import torch
-from torch.utils.data import Dataset
-from sklearn.preprocessing import MinMaxScaler
 
 def dataset_from_adata(
     adata,
     *,
-    # time_label=None,
     root_indices=None,
     terminal_indices=None,
     scale=True,
-    # spatial_key=None,     # e.g. "spatial" in adata.obsm
-    # batch_key=None,       # e.g. "batch" in adata.obs
 ):
     X = adata.X
     if hasattr(X, "toarray"):
@@ -115,13 +78,8 @@ def dataset_from_adata(
     dataset = AnnDataDataset(
         X,
         obs_names=adata.obs_names,
-        # time_labels=time_labels,
         root_indices=root_indices,
         terminal_indices=terminal_indices,
-        # spatial=spatial,
-        # spatial_mean=spatial_mean,
-        # spatial_std=spatial_std,
-        # batch_ids=batch_ids,
     )
     return dataset
 
@@ -130,13 +88,8 @@ class AnnDataDataset(Dataset):
         self,
         X,
         obs_names=None,
-        # time_labels=None,
         root_indices=None,
         terminal_indices=None,
-        # spatial=None,
-        # spatial_mean=None,
-        # spatial_std=None,
-        # batch_ids=None,
     ):
         self.data = torch.tensor(X, dtype=torch.float32)
 

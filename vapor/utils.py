@@ -1,11 +1,10 @@
+from typing import Optional
+
 import torch
 import torch.nn as nn
-from dataclasses import dataclass
-from typing import Optional, List
+from torch.utils.data import Subset
 
 from .config import VAPORConfig
-
-from torch.utils.data import Subset
 
 def get_base_dataset(ds):
     return ds.dataset if isinstance(ds, Subset) else ds
@@ -74,17 +73,16 @@ def initialize_model(
         decoder_dims=config.decoder_dims
     )
     
-    print(config.gate_temperature)
     transport_op = TransportOperator(
         latent_dim=config.latent_dim,
         n_dynamics=config.n_dynamics,
-        gate_temperature=config.gate_temperature
+        gate_temperature=config.gate_temperature,
+        gate_mode=config.gate_mode,
+        use_bias=config.use_bias
     )
     
     model = VAPOR(vae=vae, transport_op=transport_op)
     return model
-
-
 
 
 def save_checkpoint(model, config, path: str, extra: dict | None = None):
@@ -94,20 +92,33 @@ def save_checkpoint(model, config, path: str, extra: dict | None = None):
     payload = {
         "model_state_dict": model.state_dict(),
         "config": vars(config) if config is not None else None,
+        "input_dim": model.vae.input_dim,
         "extra": extra or {},
     }
     torch.save(payload, path)
 
-def load_checkpoint(model, path: str, map_location="cpu"):
-    ckpt = torch.load(path, map_location=map_location)
+
+def load_checkpoint(path: str, model=None, map_location="cpu"):
+    """Load a VAPOR checkpoint.
+
+    If `model` is None, reconstructs the model from the saved config.
+    Returns (model, ckpt_dict).
+    """
+    ckpt = torch.load(path, map_location=map_location, weights_only=False)
+    if model is None:
+        config = VAPORConfig.from_dict(ckpt["config"])
+        input_dim = ckpt.get("input_dim")
+        if input_dim is None:
+            raise ValueError(
+                "Checkpoint missing 'input_dim'. Pass a pre-built model instead."
+            )
+        model = initialize_model(input_dim, config=config)
     model.load_state_dict(ckpt["model_state_dict"])
     return model, ckpt
-   
-####### EXPERIMENTS
+
 import os
 import random
 import numpy as np
-import torch
 
 def set_seed(seed: int, deterministic: bool = True):
     """

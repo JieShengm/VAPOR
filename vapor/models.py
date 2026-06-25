@@ -1,4 +1,3 @@
-import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -10,20 +9,37 @@ from .utils import init_vae_weights
 # ============================================================
 
 class TransportOperator(nn.Module):
-    def __init__(self, latent_dim: int, n_dynamics: int, gate_temperature: float = 0.75,
-                 gate_mode: str = "sigmoid_norm"):  # 'softmax' | 'sigmoid_norm' | 'sigmoid'
+    def __init__(
+        self,
+        latent_dim: int,
+        n_dynamics: int,
+        gate_temperature: float = 0.5,
+        gate_mode: str = "sigmoid_norm",
+        use_bias: bool = False,
+    ):
         super().__init__()
         self.latent_dim = latent_dim
         self.n_dynamics = n_dynamics
-        self.gate_mode  = gate_mode
-        
-        self.Psi = nn.ParameterList([
-            nn.Parameter(torch.empty(latent_dim, latent_dim))
-            for _ in range(n_dynamics)
-        ])
-        for psi in self.Psi:
-            # nn.init.orthogonal_(psi, gain=1e-3)
-            nn.init.orthogonal_(psi, gain=1.0)
+        self.gate_mode = gate_mode
+        self.use_bias = use_bias
+
+        valid_modes = {"softmax", "sigmoid_norm", "sigmoid"}
+        if gate_mode not in valid_modes:
+            raise ValueError(
+                f"Unknown gate_mode: '{gate_mode}'. Must be one of {sorted(valid_modes)}"
+            )
+
+        # (M, D, D) — single batched tensor instead of ParameterList
+        self.Psi = nn.Parameter(torch.empty(n_dynamics, latent_dim, latent_dim))
+        for m in range(n_dynamics):
+            nn.init.orthogonal_(self.Psi.data[m], gain=1.0)
+
+        if use_bias:
+            self.b = nn.Parameter(torch.zeros(n_dynamics, latent_dim))
+            nn.init.normal_(self.b, mean=0.0, std=0.01)
+        else:
+            self.register_parameter("b", None)
+
         self.gate_tokens = nn.Parameter(torch.randn(n_dynamics, latent_dim))
         nn.init.xavier_uniform_(self.gate_tokens)
 
@@ -34,99 +50,92 @@ class TransportOperator(nn.Module):
             nn.Linear(latent_dim, max(32, latent_dim // 4)),
             nn.LeakyReLU(),
             nn.Linear(max(32, latent_dim // 4), 1),
-            nn.Softplus()
+            nn.Softplus(),
         )
+    
+    def raw_directions(self, z: torch.Tensor) -> torch.Tensor:
+        U = torch.einsum('bd,mde->bme', z, self.Psi)                 # (B, M, D)
+        if self.use_bias:
+            U = U + self.b.unsqueeze(0)
+        return U
 
     def unit_directions(self, z: torch.Tensor) -> torch.Tensor:
-        U = torch.stack([z @ psi for psi in self.Psi], dim=1)         # (B, M, d)
-        return U / (U.norm(dim=-1, keepdim=True).clamp_min(1e-6))     # (B, M, d)
+        U = self.raw_directions(z)                                    # (B, M, D)
+        return U / (U.norm(dim=-1, keepdim=True).clamp_min(1e-6))     # (B, M, D)
 
-    def gate_logits(self, Uhat: torch.Tensor) -> torch.Tensor:
-        tok = F.normalize(self.gate_tokens, dim=-1, eps=1e-6)         # (M, d)
-        logits = torch.einsum('bmd,md->bm', Uhat, tok)                # (B, M)
+    def gate_logits(self, z: torch.Tensor, Uhat: torch.Tensor = None) -> torch.Tensor:
+        if Uhat is None:
+            Uhat = self.unit_directions(z)
+        tok = F.normalize(self.gate_tokens, dim=-1, eps=1e-6)         # (M, D)
+        logits = torch.einsum('bmd,md->bm', Uhat, tok)               # (B, M)
         return logits / self.gate_temperature.clamp_min(1e-6)
 
-    def get_mixture_weights(self, Uhat: torch.Tensor) -> torch.Tensor:
-        logits = self.gate_logits(Uhat)                               # (B, M)
+    def get_mixture_weights(self, z: torch.Tensor, Uhat: torch.Tensor = None) -> torch.Tensor:
+        logits = self.gate_logits(z, Uhat=Uhat)                       # (B, M)
         mode = self.gate_mode.lower()
         if mode == "softmax":
             pi = torch.softmax(logits, dim=1)
         elif mode == "sigmoid_norm":
-            a  = torch.sigmoid(logits)
-            pi = a / (a.sum(dim=1, keepdim=True) + self.eps)         
+            a = torch.sigmoid(logits)
+            pi = a / (a.sum(dim=1, keepdim=True) + self.eps)
         elif mode == "sigmoid":
-            pi = torch.sigmoid(logits) 
+            pi = torch.sigmoid(logits)
         else:
             raise ValueError(f"Unknown gate_mode: {self.gate_mode}")
-        return pi  
-
+        return pi
+    
+    # ---------------------------------------------------------------------
+    # Forward / velocity
+    # ---------------------------------------------------------------------
     def forward(self, t: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
-        Uhat = self.unit_directions(z)                                # (B, M, d)
-        pi   = self.get_mixture_weights(Uhat)                         # (B, M)
-        v_dir = torch.einsum('bm,bmd->bd', pi, Uhat)                  # (B, d) 
-        speed = self.speed_head(z).squeeze(-1)
-        # speed = torch.tanh(speed / 3.0) * 3.0# (B,)
-        # speed = torch.clamp(speed, max=2.0)
-        return v_dir * speed.unsqueeze(-1)                            # (B, d)
-
+        Uhat = self.unit_directions(z)                                # (B, M, D)
+        pi = self.get_mixture_weights(z, Uhat=Uhat)                   # (B, M)
+        v_dir = torch.einsum('bm,bmd->bd', pi, Uhat)                  # (B, D)
+        speed = self.speed_head(z).squeeze(-1)                         # (B,)
+        return v_dir * speed.unsqueeze(-1)                            # (B, D)
+    
     @torch.no_grad()
     def unit_velocity(self, z: torch.Tensor) -> torch.Tensor:
         Uhat = self.unit_directions(z)
-        pi   = self.get_mixture_weights(Uhat)
-        v    = torch.einsum('bm,bmd->bd', pi, Uhat)
+        pi = self.get_mixture_weights(z, Uhat=Uhat)
+        v = torch.einsum('bm,bmd->bd', pi, Uhat)
         return F.normalize(v, dim=-1, eps=1e-6)
-
+    
     def compute_velocities(self, z: torch.Tensor) -> torch.Tensor:
         return self.forward(torch.tensor(0.0, device=z.device), z)
+    
+    def orthogonality_loss(self, mode: str = "stiefel") -> torch.Tensor:
+        """Penalize the M Psi operators for not being orthogonal.
 
-    def sort_and_prune_psi(self, prune_threshold: float = None, relative: bool = False) -> None:
-            # Compute norms
-            norms = [psi.data.norm().item() for psi in self.Psi]
-            max_norm = max(norms)
-            
-            # Sort by norms descending
-            sorted_idxs = sorted(range(len(norms)), 
-                                key=lambda i: norms[i], reverse=False)
-            
-            # Determine which channels to keep
-            if prune_threshold is None:
-                # Just sort, keep all
-                keep = sorted_idxs
-            else:
-                if relative:
-                    # Relative pruning: keep channels >= fraction * max_norm
-                    keep = [i for i in sorted_idxs 
-                           if norms[i] >= prune_threshold * max_norm]
-                else:
-                    # Absolute pruning: keep channels >= RMS threshold
-                    D = self.latent_dim
-                    n_elem = D * D
-                    rms_norms = [norms[i] / math.sqrt(n_elem) for i in sorted_idxs]
-                    keep = [sorted_idxs[j] for j, rms in enumerate(rms_norms) 
-                           if rms >= prune_threshold]
-            
-            # Always keep at least one channel (the largest)
-            if not keep:
-                keep = [sorted_idxs[0]]
-            
-            # Rebuild
-            self.Psi = nn.ParameterList([self.Psi[i] for i in keep])
-            new_tokens = self.gate_tokens[keep].clone().detach()
-            self.gate_tokens = nn.Parameter(new_tokens)
-            self.n_dynamics = len(keep)
-            
-            # Print results
-            if prune_threshold is None:
-                print(f"Sorted {self.n_dynamics} channels by norm")
-            else:
-                if relative:
-                    print(f"Pruned to {self.n_dynamics} channels (relative threshold: {prune_threshold})")
-                else:
-                    D = self.latent_dim
-                    n_elem = D * D
-                    kept_rms = [norms[i] / math.sqrt(n_elem) for i in keep]
-                    print(f"Pruned to {self.n_dynamics} channels (RMS threshold: {prune_threshold})")
-                    print(f"Kept RMS norms: {kept_rms}")
+        mode='stiefel': ||P^T P - I||_F^2
+            Constrains BOTH direction (off-diagonals -> 0, i.e. Psi_m
+            mutually orthogonal) AND norm (diagonals -> 1, i.e. each
+            ||Psi_m|| -> 1). Prevents collapse, but assumes the GT
+            operators have comparable Frobenius norms — biased when one
+            process is dominated by an affine bias and its linear Psi
+            is near zero.
+
+        mode='cosine': ||off_diag( P_n^T P_n )||_F^2  with P_n column-normalized
+            Only constrains direction (cosines between unit-vectorized
+            Psi_m -> 0). Norms are free, so processes with very different
+            magnitudes (e.g. strong rotation vs weak linear-drift +
+            large affine bias) are not distorted. Does NOT prevent
+            collapse on its own — pair with a small weight decay on Psi
+            or a norm hinge if you observe ||Psi_m|| -> 0.
+        """
+        P = self.Psi.reshape(self.n_dynamics, -1).T                    # (d^2, M)
+        M_ = P.shape[1]
+        eye_M = torch.eye(M_, device=P.device, dtype=P.dtype)
+        if mode == "stiefel":
+            gram = P.T @ P
+            return ((gram - eye_M) ** 2).sum()
+        elif mode == "cosine":
+            P_n = P / (P.norm(dim=0, keepdim=True) + 1e-9)
+            gram = P_n.T @ P_n
+            off = gram - eye_M
+            return (off ** 2).sum()
+        else:
+            raise ValueError(f"unknown orthogonality mode: {mode}")
 
 # ============================================================
 # VAE
@@ -135,7 +144,7 @@ class TransportOperator(nn.Module):
 class VAE(nn.Module):
     def __init__(self, input_dim: int, latent_dim: int, encoder_dims=None, decoder_dims=None):
         super().__init__()
-        encoder_dims = encoder_dims or [2048, 1024, 512, 256, 128]
+        encoder_dims = encoder_dims or [512, 256, 128]
         decoder_dims = decoder_dims or list(reversed(encoder_dims))
         
         layers, prev = [], input_dim
@@ -164,7 +173,6 @@ class VAE(nn.Module):
         h = self.encoder(x)
         mu = self.fc_mu(h)
         logvar = self.fc_logvar(h)
-        # logvar = -3.75 + 2.25 * torch.tanh(logvar / 5.0)
         return mu, logvar
 
     def reparameterize(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
@@ -193,27 +201,16 @@ class VAPOR(nn.Module):
     def encode(self, x: torch.Tensor):
         return self.vae(x)
     
-    # def integrate(self, z0: torch.Tensor, t_span: torch.Tensor):
-    #     z0_det = z0.detach()
-    #     # reset NFE counter (optional)
-    #     if hasattr(self.transport_op, "nfe"):
-    #         print("Resetting NFE counter to zero.")
-    #         self.transport_op.nfe.zero_()
-    #     return odeint(self.transport_op, z0_det, t_span, 
-    #                   method='rk4') 
-
     def integrate(self, z0: torch.Tensor, t_span: torch.Tensor,
               dt: float = 1.0):
         z0_det = z0.detach()
-        print(f"Integrating with dt={dt}...")
-        # reset NFE counter (optional)
         if hasattr(self.transport_op, "nfe"):
             self.transport_op.nfe.zero_()
         return odeint(self.transport_op, z0_det, t_span,
                     method='rk4',
                     options={'step_size': dt})
 
-    def compute_velocities(self, z: torch.Tensor,) -> torch.Tensor:
+    def compute_velocities(self, z: torch.Tensor) -> torch.Tensor:
         return self.transport_op.compute_velocities(z)
 
     def flag_direction_loss_graph_global(

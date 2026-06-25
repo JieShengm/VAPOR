@@ -19,8 +19,9 @@ class VAPORConfig:
     terminal_indices: Optional[List[int]] = None
     scale: bool = True
 
-    # Graph / path (TCL)
+    # Graph / path
     graph_k: int = 50
+    graph_use_mu: bool = True              # True: kNN on mu (deterministic), False: on z (sampled)
     dt: float = 1.0
 
     # Model
@@ -30,23 +31,25 @@ class VAPORConfig:
     decoder_dims: List[int] = field(default_factory=lambda: [128, 512, 2048])
 
     # Training
-    total_steps: int = 25000
+    total_steps: int = 20000
     batch_size: int = 512
-    lr: float = 1e-4
+    lr: float = 5e-5
     device: Optional[str] = "cuda"
 
     # Loss weights
     beta: float = 0.01
     alpha: float = 1.0
     gamma: float = 1.0
+    lambda_orth: float = 0.1
+    orth_mode: str = "stiefel"                     # “cosine”, “stiefel”, “frobenius”
     eta: float = 1.0
     gate_temperature: float = 0.5
+    gate_mode: str = "sigmoid_norm"             # "softmax", "sigmoid_norm", "sigmoid"
+    use_bias: bool = False
 
     # Training options
     t_max: int = 5
-    prune: bool = False
     grad_clip: float = 0.2
-    print_freq: int = 1
     plot_losses: bool = True
     ckpt_every_steps: int = 10000
     

@@ -1,5 +1,28 @@
+import math
+import time
+import random
+from typing import Dict, List, Optional, Tuple, Iterable
+from collections import Counter, defaultdict
+
 import numpy as np
+import pandas as pd
 import torch
+import torch.nn.functional as F
+import seaborn as sns
+import matplotlib.pyplot as plt
+from matplotlib import gridspec
+
+try:
+    from torch.autograd.functional import jvp as _torch_jvp
+    _HAS_JVP = True
+except Exception:
+    _HAS_JVP = False
+
+try:
+    from tqdm.auto import tqdm
+except Exception:
+    tqdm = None
+
 
 def row_zscore(X: np.ndarray) -> np.ndarray:
     X = np.asarray(X)
@@ -41,7 +64,7 @@ def extract_latents_and_dynamics(
     
     # ===== Dynamics computed on mu (deterministic, for downstream) =====
     Uhat = model.transport_op.unit_directions(mu)
-    g_t = model.transport_op.get_mixture_weights(Uhat)
+    g_t = model.transport_op.get_mixture_weights(mu, Uhat)
     t = torch.zeros(1).to(device)
     dz_mu = model.transport_op(t, mu)
     
@@ -83,21 +106,6 @@ def extract_latents_and_dynamics(
     
     return adata_vapor
 
-import math, time
-from typing import Dict, List, Optional, Tuple, Iterable
-import torch
-import torch.nn.functional as F
-
-try:
-    from torch.autograd.functional import jvp as _torch_jvp
-    _HAS_JVP = True
-except Exception:
-    _HAS_JVP = False
-    
-try:
-    from tqdm.auto import tqdm
-except Exception:
-    tqdm = None
 
 def _weighted_aggregate(acc_sum: torch.Tensor, acc_w: float, acc_w2: float,
                         tang: torch.Tensor, w: torch.Tensor):
@@ -119,7 +127,7 @@ def _compute_gate_thresholds_minmax(
         for start in range(0, z_all.size(0), batch_size):
             z = z_all[start:start+batch_size].to(next(to.parameters()).device, non_blocking=True)
             Uhat = to.unit_directions(z)          # (B,M,d)
-            g = to.get_mixture_weights(Uhat)      # (B,M)
+            g = to.get_mixture_weights(z,Uhat)      # (B,M)
             vals.append(g.detach().cpu())
             if progress and pbar is not None:
                 pbar.update(1)
@@ -135,6 +143,15 @@ def _compute_gate_thresholds_minmax(
     thr_norm = torch.quantile(Gn, q, dim=0)       # (M,)
     thr_raw = g_min + thr_norm * rng              # back to original scale
     return thr_raw, dict(g_min=g_min, g_max=g_max, rng=rng, thr_norm=thr_norm)
+
+def _v_of(to_, m: int, z: torch.Tensor) -> torch.Tensor:
+    """Per-process latent velocity v_m(z) = z @ Psi_m + b_m.
+    """
+    v = z @ to_.Psi[m]
+    b = getattr(to_, "b", None)
+    if b is not None:
+        v = v + b[m]              # to.b is Parameter (M, d); b[m] is (d,)
+    return v
 
 @torch.no_grad()
 def directional_gene_scores_jvp_progress(
@@ -223,7 +240,8 @@ def directional_gene_scores_jvp_progress(
         for start in range(0, z_all.size(0), batch_size*4):
             z = z_all[start:start+batch_size*4].to(device_t, non_blocking=True)
             for m in psi_ids_0b:
-                v = z @ to.Psi[m]
+                # v = z @ to.Psi[m]
+                v = _v_of(to, m, z)
                 vv = torch.linalg.vector_norm(v, dim=1)
                 if m not in speed_medians:
                     speed_medians[m] = []
@@ -260,7 +278,7 @@ def directional_gene_scores_jvp_progress(
         z.requires_grad_(True)
         with torch.set_grad_enabled(True), autocast_cm:
             u = to.unit_directions(z)
-            gates = to.get_mixture_weights(u)  # (B,M)
+            gates = to.get_mixture_weights(z,u)  # (B,M)
             if clip_gate_pct is not None:
                 g_hi = torch.quantile(gates, clip_gate_pct, dim=0, keepdim=True)
                 gates = torch.minimum(gates, g_hi)
@@ -274,7 +292,8 @@ def directional_gene_scores_jvp_progress(
 
                 z_k = z[keep]
                 c_k = c[keep]
-                v = z_k @ to.Psi[m]
+                # v = z_k @ to.Psi[m]
+                v = _v_of(to, m, z_k)
                 sp = torch.linalg.vector_norm(v, dim=1)
                 if speed_normalize:
                     v = v / (sp.unsqueeze(1) + 1e-8)
@@ -331,7 +350,6 @@ def directional_gene_scores_jvp_progress(
         }
     return adata_vapor
 
-from collections import Counter
 
 def _split_lr_pair(pair_name: str):
     """Return (ligand, receptor). Supports '—' and '-'."""
@@ -377,8 +395,6 @@ def _lr_pairs_to_genes(lr_pairs, mode="both", dedup=True):
         genes = [g for g in genes if not (g in seen or seen.add(g))]
     return genes
 
-import numpy as np
-import pandas as pd
 
 def _select_top_features(scores, feature_names, top_n=250, select="pos"):
     scores = np.asarray(scores, dtype=float)
@@ -398,8 +414,6 @@ def _select_top_features(scores, feature_names, top_n=250, select="pos"):
 
     return out
 
-import time
-import random
 
 def _run_enrichment_internal(gene_list, gene_sets, organism="Human", 
                              cutoff=0.05,
@@ -529,9 +543,8 @@ def run_enrichment(
                     gene_sets=gene_sets,
                     organism=organism,
                 )
-                print('time sleep')
                 time.sleep(1.0)
-                
+
             except RuntimeError as e:
                 print(f"[TRANSMISSION FAIL] {key}: {e}")
                 results[key] = {"_status": "transmission_failed", "error": str(e)}
@@ -552,8 +565,6 @@ def run_enrichment(
 
     return results
 
-import pandas as pd
-from collections import defaultdict
 
 def _pick_score(df):
     for col in ['Adjusted P-value','Adjusted P-value (FDR)','FDR p-value','FDR']:
@@ -622,11 +633,6 @@ def build_heatmap_mats(enrichment_results, top_n=None):
 
     return mat_by_suffix
 
-import numpy as np
-import pandas as pd
-import seaborn as sns
-import matplotlib.pyplot as plt
-from matplotlib import gridspec
 
 def plot_heatmap(mat, title, cmap='rocket_r',
                  zscore_rows=False,

@@ -44,6 +44,8 @@ For GPU acceleration, install the appropriate PyTorch version for your CUDA setu
 
 ## Usage
 
+For a complete walkthrough, see [`notebooks/pancreas_tutorial.ipynb`](notebooks/pancreas_tutorial.ipynb).
+
 ```python
 import vapor
 import scanpy as sc
