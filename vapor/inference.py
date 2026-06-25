@@ -162,7 +162,7 @@ def directional_gene_scores_jvp_progress(
     psi_indices: Optional[Iterable[int]] = None,
     batch_size: int = 256,
     alpha: float = 1.0,
-    tau_quantile: Optional[float] = 0.8,
+    tau_quantile: Optional[float] = 0.6,
     speed_normalize: bool = True,
     density_weights: Optional[torch.Tensor] = None,
     use_autocast: bool = False,
